@@ -211,18 +211,174 @@ data_05 <- activity_05_trimmed %>%
   relocate(TUCASEID, TULINENO, TUFINLWGT, homeowner, volunteer_mins)%>%
   mutate(owner = ifelse(homeowner==1,1,0), year=2005)
 
-
-# lazy models
-model1 <- lm(volunteer_mins ~ owner, data=data_11)
-summary(model1)
-
-model2 <- lm(volunteer_mins ~ owner, data_05)
-summary(model2)
-
 data_0511 <- bind_rows(data_05, data_11)
 data_0511 <- data_0511%>%mutate(post2008 = ifelse(year >= 2008, 1, 0))
 
-model3 <- lm(volunteer_mins ~ owner * post2008, data=data_0511)
+# Further refining, recoding categoricals ----
+data_0511 <- data_0511%>%filter(homeowner != 3)
+
+data_0511 <- data_0511 %>%
+  mutate(
+    # EDUCATION OPTION 2: Highest educational attainment.
+    # This retains the substantive credential categories.
+    education_cat = case_when(
+      education %in% 31:38 ~ "Less than high school",
+      education == 39 ~ "High school graduate",
+      education == 40 ~ "Some college, no degree",
+      education %in% c(41, 42) ~ "Associate degree",
+      education == 43 ~ "Bachelor's degree",
+      education == 44 ~ "Master's degree",
+      education == 45 ~ "Professional degree",
+      education == 46 ~ "Doctoral degree",
+      TRUE ~ NA_character_
+    ),
+    
+    education_cat = factor(
+      education_cat,
+      levels = c(
+        "Less than high school",
+        "High school graduate",
+        "Some college, no degree",
+        "Associate degree",
+        "Bachelor's degree",
+        "Master's degree",
+        "Professional degree",
+        "Doctoral degree"
+      ),
+      ordered = TRUE
+    ),
+    
+    # RACE: Preserve White and Black; combine rare categories.
+    # 1 = White; 2 = Black; 3-5 = other single-race categories;
+    # 6-19 = multiracial combinations in the 2005/2011 coding.
+    race_cat = case_when(
+      race == 1 ~ "White",
+      race == 2 ~ "Black",
+      race %in% 3:5 ~ "Other single race",
+      race %in% 6:19 ~ "Multiracial",
+      TRUE ~ NA_character_
+    ),
+    race_cat = factor(race_cat),
+    
+    # SEX: 1 = male, 2 = female.
+    sex_cat = factor(
+      if_else(sex %in% 1:2, sex, NA_real_),
+      levels = c(1, 2),
+      labels = c("Male", "Female")
+    ),
+    
+    # MARITAL STATUS: Combine widowed, divorced, and separated.
+    # Keep married spouse absent separate from married spouse present.
+    married_cat = case_when(
+      married == 1 ~ "Married, spouse present",
+      married == 2 ~ "Married, spouse absent",
+      married %in% c(3, 4, 5) ~ "Previously married",
+      married == 6 ~ "Never married",
+      TRUE ~ NA_character_
+    ),
+    married_cat = factor(married_cat),
+    
+    # CITIZENSHIP: Preserve the three substantive categories.
+    citizen_cat = factor(
+      if_else(citizen %in% 1:3, citizen, NA_real_),
+      levels = c(1, 2, 3),
+      labels = c(
+        "Native-born citizen",
+        "Naturalized citizen",
+        "Not a citizen"
+      )
+    ),
+
+    # INCOME: Brackets aren't equal size, recoding.
+    # <$15,000 (lower)
+    # <35,000 (lower-middle)
+    # <$65,000 (middle)
+    # <$100,000 (upper-middle)
+    # >=$100,000 (upper)
+    income_cat = case_when(
+      income %in% 1:5   ~ "Under $15,000",
+      income %in% 6:9   ~ "$15,000-$34,999",
+      income %in% 10:12 ~ "$35,000-$59,999",
+      income %in% 13:14 ~ "$60,000-$99,999",
+      income %in% 15:16 ~ "$100,000+",
+      TRUE ~ NA_character_
+    ),
+    income_cat = factor(
+      income_cat,
+      levels = c(
+        "Under $15,000",
+        "$15,000-$34,999",
+        "$35,000-$59,999",
+        "$60,000-$99,999",
+        "$100,000+"
+      ),
+      ordered = TRUE
+    ),
+    
+    # HOMEOWNERSHIP: Existing filter excludes code 3.
+    homeowner_cat = factor(
+      if_else(homeowner %in% 1:2, homeowner, NA_real_),
+      levels = c(2, 1),
+      labels = c("Renter", "Homeowner")
+    ),
+
+    # LABOR FORCE STATUS.
+    # 1-2 = Employed
+    # 3-4 = Unemployed (including temporary layoff)
+    # 5 = Not in labor force
+    employed_cat = case_when(
+      employed %in% 1:2 ~ "Employed",
+      employed %in% 3:4 ~ "Unemployed",
+      employed == 5     ~ "Not in labor force",
+      TRUE              ~ NA_character_
+    ),
+    employed_cat = factor(
+      employed_cat,
+      levels = c("Employed", "Unemployed", "Not in labor force")
+    ),
+    
+    # FULL-TIME / PART-TIME STATUS.
+    # Confirm the 2005 and 2011 codebooks before using this variable:
+    # TRDPFTPT may contain additional nonemployment codes.
+    fulltime_cat = factor(
+      if_else(fulltime %in% 1:2, fulltime, NA_real_),
+      levels = 1:2,
+      labels = c("Full-time", "Part-time")
+    ),
+    
+    # SCHOOL ENROLLMENT.
+    inschool_cat = factor(
+      if_else(inschool %in% 1:2, inschool, NA_real_),
+      levels = c(1, 2),
+      labels = c("Enrolled", "Not enrolled")
+    ),
+    
+    # SPOUSE/PARTNER PRESENT.
+    spouse_pres_cat = factor(
+      if_else(spouse_pres %in% 1:3, spouse_pres, NA_real_),
+      levels = c(1, 2, 3),
+      labels = c(
+        "Spouse present",
+        "Unmarried partner present",
+        "Neither present"
+      )
+    ),
+    
+    # YEAR AND POST-PERIOD INDICATORS.
+    # Both are used in case I add more years for parallel-trends
+    year_cat = factor(year),
+    post2008_cat = factor(post2008, levels = c(0, 1)),
+    owner_cat = factor(owner, levels = c(0, 1))
+    )
+
+# Lazy models ----
+m_pre_vol <- lm(volunteer_mins ~ owner , data=filter(data_0511, post2008 == 1))
+summary(model1)
+
+m_post_vol <- lm(volunteer_mins ~ owner, data=filter(data_0511, post2008 == 0))
+summary(model2)
+
+m_did_vol <- lm(volunteer_mins ~ owner * post2008, data=data_0511)
 summary(model3)
 
 # Summary Statistics Table. AI Assisted ----

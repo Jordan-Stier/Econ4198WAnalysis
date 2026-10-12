@@ -1,14 +1,14 @@
 "Variable","N","Mean","SD"
-"Volunteer minutes",25517,9.93,50.97
-"Civic Participation minutes",25517,0.09,4.27
-"Age",25517,46.27,17.71
-"Income",25517,9.39,5.19
-"Education",25517,40.17,2.9
-"Children",25517,0.9,1.16
-"Work hours",25517,21.5,22.01
-"Female (%)",25517,56.65,NA
-"White (%)",25517,81.13,NA
-"Homeowner (%)",25517,72.8,NA
-"Married (%)",25517,48.61,NA
-"Employed (%)",25517,60,NA
-"Post 2008 (%)",25517,48.9,NA
+"Volunteer minutes",25250,10,51.2
+"Civic Participation minutes",25250,0.09,4.29
+"Age",25250,46.28,17.7
+"Income",25250,9.42,5.19
+"Education",25250,40.18,2.9
+"Children",25250,0.9,1.16
+"Work hours",25250,21.56,22
+"Female (%)",25250,56.65,NA
+"White (%)",25250,81.11,NA
+"Homeowner (%)",25250,73.57,NA
+"Married (%)",25250,48.72,NA
+"Employed (%)",25250,60.11,NA
+"Post 2008 (%)",25250,48.89,NA
