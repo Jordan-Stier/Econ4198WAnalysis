@@ -3,6 +3,7 @@
 #install.packages("tidyr")
 #install.packages("ggplot2")
 #install.packages("lmtest")
+#install.packages("marginaleffects")
 library(haven)
 library(dplyr)
 library(tidyr)
@@ -24,7 +25,6 @@ cps_11_trimmed<-cps_11%>%select(
   TULINENO,      # Household member line number
   
   HEFAMINC,      # Family/household income
-  HEHOUSUT,      # Housing unit status
   HETENURE,      # Housing tenure: owned, rented, etc.
   
   PESEX,         # Sex
@@ -120,7 +120,6 @@ cps_05_trimmed <- cps_05 %>%
     TULINENO,      # Household member line number
     
     HUFAMINC,      # Family/household income
-    HEHOUSUT,      # Housing unit status
     HETENURE,      # Housing tenure: owned, rented, etc.
     
     PESEX,         # Sex
@@ -245,7 +244,7 @@ data_0511 <- data_0511 %>%
         "Professional degree",
         "Doctoral degree"
       ),
-      ordered = TRUE
+      ordered = FALSE
     ),
     
     # RACE: Preserve White and Black; combine rare categories.
@@ -312,7 +311,7 @@ data_0511 <- data_0511 %>%
         "$60,000-$99,999",
         "$100,000+"
       ),
-      ordered = TRUE
+      ordered = FALSE
     ),
     
     # HOMEOWNERSHIP: Existing filter excludes code 3.
@@ -371,89 +370,10 @@ data_0511 <- data_0511 %>%
     owner_cat = factor(owner, levels = c(0, 1))
     )
 
-# Lazy models ----
-m_pre_vol <- lm(volunteer_mins ~ owner , data=filter(data_0511, post2008 == 1))
-summary(model1)
+# Filtering out original form of recoded vars
+data_0511_clean <- data_0511 %>%
+  select(
+    -inschool, -employed, -fulltime, -spouse_pres, -income, -sex, -education,
+    -married, -citizen, -homeowner)
 
-m_post_vol <- lm(volunteer_mins ~ owner, data=filter(data_0511, post2008 == 0))
-summary(model2)
-
-m_did_vol <- lm(volunteer_mins ~ owner * post2008, data=data_0511)
-summary(model3)
-
-# Summary Statistics Table. AI Assisted ----
-make_summary <- function(data, var, label = var, percent_value = NULL) {
-  
-  x <- data[[var]]
-  
-  if (!is.null(percent_value)) {
-    # Percentage of observations equal to the specified category
-    pct <- mean(x == percent_value, na.rm = TRUE) * 100
-    
-    data.frame(
-      Variable = label,
-      N = sum(!is.na(x)),
-      Mean = pct,
-      SD = NA_real_
-    )
-    
-  } else {
-    # Regular continuous-variable summary
-    data.frame(
-      Variable = label,
-      N = sum(!is.na(x)),
-      Mean = mean(x, na.rm = TRUE),
-      SD = sd(x, na.rm = TRUE)
-    )
-  }
-}
-
-table1 <- bind_rows(
-  
-  make_summary(data_0511, "volunteer_mins", "Volunteer minutes"),
-  make_summary(data_0511, "civic_mins", "Civic Participation minutes"),
-  make_summary(data_0511, "age", "Age"),
-  make_summary(data_0511, "income", "Income"),
-  make_summary(data_0511, "education", "Education"),
-  make_summary(data_0511, "children", "Children"),
-  make_summary(data_0511, "workhours", "Work hours"),
-  
-  make_summary(
-    data_0511, "sex", "Female (%)",
-    percent_value = 2
-  ),
-  make_summary(
-    data_0511, "race", "White (%)",
-    percent_value = 1
-  ),
-  make_summary(
-    data_0511, "owner", "Homeowner (%)",
-    percent_value = 1
-  ),
-  
-  make_summary(
-    data_0511, "married", "Married (%)",
-    percent_value = 1
-  ),
-  
-  make_summary(
-    data_0511, "employed", "Employed (%)",
-    percent_value = 1
-  ),
-  
-  make_summary(
-    data_0511, "post2008", "Post 2008 (%)",
-    percent_value = 1
-  )
-) %>%
-  mutate(
-    Mean = round(Mean, 2),
-    SD = round(SD, 2)
-  )
-
-table1
-write.csv(
-  table1,
-  "table1_descriptive_statistics.csv",
-  row.names = FALSE
-)
+saveRDS(data_0511_clean, "data_0511_clean.rds")
