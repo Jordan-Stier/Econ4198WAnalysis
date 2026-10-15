@@ -4,11 +4,14 @@
 #install.packages("ggplot2")
 #install.packages("lmtest")
 #install.packages("marginaleffects")
+#install.packages("survey")
 library(haven)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(lmtest)
+library(marginaleffects)
+library(survey)
 
 # ATUS 2011----
 # Reading in tables
@@ -80,20 +83,23 @@ activity_11_trimmed<-activity_11%>%mutate(
     sports_mins = rowSums(
       across(starts_with("t1301")),
       na.rm = TRUE
-    )
+    ),
+    civic_mins = rowSums(
+      across(c(t100201, t100305)),
+      na.rm = TRUE
+    ),
   )%>%select(
   tucaseid,     # ATUS case ID
-  t100201,      # Civic obligations/participation
   t120302,      # Tobacco/drug use
   t120404,      # Gambling
   t140101,      # Religious services
   volunteer_mins, # Volunteering
   socevent_mins, # Social event att/host
   socgen_mins,  # General socializing
-  sports_mins   # Play sports
+  sports_mins,   # Play sports
+  civic_mins # Civic obligations/participation
   ) %>% rename(
-    TUCASEID=tucaseid,
-    civic_mins=t100201, drug_mins=t120302,
+    TUCASEID=tucaseid, drug_mins=t120302,
     gamble_mins=t120404, religserv_mins=t140101
   )
 
@@ -183,21 +189,24 @@ activity_05_trimmed <- activity_05 %>%
     sports_mins = rowSums(
       across(starts_with("t1301")),
       na.rm = TRUE
+    ),
+    civic_mins = rowSums(
+      across(c(t100201, t100299, t100303)),
+      na.rm = TRUE
     )
   ) %>%
   select(
     TUCASEID,       # ATUS case ID
-    t100201,        # Civic obligations/participation
     t120302,        # Tobacco/drug use
     t120404,        # Gambling
     t140101,        # Religious services
     volunteer_mins,
     socevent_mins,
     socgen_mins,
-    sports_mins
+    sports_mins,
+    civic_mins # Civic obligations/participation
   ) %>%
   rename(
-    civic_mins = t100201,
     drug_mins = t120302,
     gamble_mins = t120404,
     religserv_mins = t140101
@@ -336,6 +345,25 @@ data_0511 <- data_0511 %>%
       levels = c("Employed", "Unemployed", "Not in labor force")
     ),
     
+    workhours_cat = case_when(
+      workhours == -4 ~ "Hours vary",
+      workhours >= 0 & workhours <= 20 ~ "0-20 hours",
+      workhours > 20 & workhours <= 35 ~ "21-35 hours",
+      workhours > 35 & workhours <= 45 ~ "36-45 hours",
+      workhours > 45 ~ "46+ hours",
+      TRUE ~ NA_character_
+    ),
+    workhours_cat = factor(
+      workhours_cat,
+      levels = c(
+        "0-20 hours",
+        "21-35 hours",
+        "36-45 hours",
+        "46+ hours",
+        "Hours vary"
+      )
+    ),
+    
     # FULL-TIME / PART-TIME STATUS.
     # Confirm the 2005 and 2011 codebooks before using this variable:
     # TRDPFTPT may contain additional nonemployment codes.
@@ -362,6 +390,8 @@ data_0511 <- data_0511 %>%
         "Neither present"
       )
     ),
+    
+    metro_cat = factor(housing_data$GTMETSTA),
     
     # YEAR AND POST-PERIOD INDICATORS.
     # Both are used in case I add more years for parallel-trends
