@@ -5,6 +5,8 @@
 #install.packages("lmtest")
 #install.packages("marginaleffects")
 #install.packages("survey")
+#install.packages("modelsummary")
+#install.packages("knitr")
 library(haven)
 library(dplyr)
 library(tidyr)
@@ -391,7 +393,7 @@ data_0511 <- data_0511 %>%
       )
     ),
     
-    metro_cat = factor(housing_data$GTMETSTA),
+    metro_cat = factor(GTMETSTA),
     
     # YEAR AND POST-PERIOD INDICATORS.
     # Both are used in case I add more years for parallel-trends
