@@ -9,6 +9,7 @@ library(survey)
 library(knitr)
 housing_data <-readRDS("data_0511_clean.rds")
 
+# Tables ----
 summary_vars <- c(
   "volunteer_mins",
   "civic_mins",
@@ -52,7 +53,12 @@ var_labels <- c(
   year_cat = "Survey Period"
 )
 
-output <- character()
+categorical_table <- data.frame(
+  Variable = character(),
+  Type = character(),
+  N = integer(),
+  Percent = numeric()
+)
 
 for (v in categorical_vars) {
   x <- housing_data[[v]]
@@ -68,17 +74,55 @@ for (v in categorical_vars) {
   counts <- counts[counts > 0]
   
   total_n <- sum(!is.na(x))
-  percentages <- 100 * as.integer(counts) / total_n
   
-  output <- c(
-    output,
-    unname(var_labels[v]),
-    paste0("Total N = ", total_n),
-    paste(names(counts), collapse = "\t"),
-    paste(as.integer(counts), collapse = "\t"),
-    paste0(sprintf("%.1f%%", percentages), collapse = "\t"),
-    ""
+  temp <- data.frame(
+    Variable = rep(unname(var_labels[v]), length(counts)),
+    Type = names(counts),
+    N = as.integer(counts),
+    Percent = round(100 * as.integer(counts) / total_n, 1)
   )
+  
+  categorical_table <- rbind(categorical_table, temp)
 }
 
-writeLines(output, "categorical_statistics.txt")
+write.table(
+  categorical_table,
+  "categorical_statistics.tsv",
+  sep = "\t",
+  row.names = FALSE,
+  quote = FALSE
+)
+
+# Plotting ----
+p <- ggplot(
+  housing_data %>%
+    mutate(
+      Homeownership = homeowner_cat,
+      Year = year_cat
+    ),
+  aes(x = Homeownership, y = volunteer_mins, color = Year)
+) +
+  geom_jitter(
+    width = 0.15,
+    height = 0,
+    alpha = 0.15,
+    size = 1
+  ) +
+  scale_y_continuous(trans = "log1p") +
+  labs(
+    title = "Homeownership and Volunteering by Survey Year",
+    x = "Homeownership Status",
+    y = "log(1+Volunteer Minutes)",
+    color = "Survey Year"
+  ) +
+  theme_minimal(base_size = 12)
+
+print(p)
+
+ggsave(
+  "homeownership_volunteering.png",
+  plot = p,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
