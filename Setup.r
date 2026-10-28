@@ -1,4 +1,5 @@
 #install.packages("haven")
+#install.packages("readxl")
 #install.packages("dplyr")
 #install.packages("tidyr")
 #install.packages("ggplot2")
@@ -8,13 +9,16 @@
 #install.packages("modelsummary")
 #install.packages("knitr")
 #install.packages("modelsummary")
+#install.packages("pandoc")
 library(haven)
+library(readxl)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(lmtest)
 library(marginaleffects)
 library(survey)
+library(tibble)
 
 # ATUS 2011----
 # Reading in tables
@@ -41,8 +45,7 @@ cps_11_trimmed<-cps_11%>%select(
   PTDTRACE,      # Race
   PEHRUSLT,      # Usual hours worked per week
   
-  GEPSEUST,      # Pseudo collapsed sampling stratum
-  GEPSEUCL,      # Pseudo PSU/cluster
+  GESTFIPS,       # State
   GTMETSTA       # Metropolitan area status
   ) %>% rename(
     sex=PESEX, homeowner=HETENURE, income=HEFAMINC,
@@ -139,8 +142,7 @@ cps_05_trimmed <- cps_05 %>%
     PTDTRACE,      # Race
     PEHRUSLT,      # Usual hours worked per week
     
-    GEPSEUCL,
-    GEPSEUST,
+    GESTFIPS,       # State
     GTMETSTA
   ) %>%
   rename(
@@ -393,6 +395,23 @@ data_0511 <- data_0511 %>%
         "Neither present"
       )
     ),
+    state = recode(
+      as.character(GESTFIPS),
+      "1" = "AL", "2" = "AK", "4" = "AZ", "5" = "AR",
+      "6" = "CA", "8" = "CO", "9" = "CT", "10" = "DE",
+      "11" = "DC", "12" = "FL", "13" = "GA", "15" = "HI",
+      "16" = "ID", "17" = "IL", "18" = "IN", "19" = "IA",
+      "20" = "KS", "21" = "KY", "22" = "LA", "23" = "ME",
+      "24" = "MD", "25" = "MA", "26" = "MI", "27" = "MN",
+      "28" = "MS", "29" = "MO", "30" = "MT", "31" = "NE",
+      "32" = "NV", "33" = "NH", "34" = "NJ", "35" = "NM",
+      "36" = "NY", "37" = "NC", "38" = "ND", "39" = "OH",
+      "40" = "OK", "41" = "OR", "42" = "PA", "44" = "RI",
+      "45" = "SC", "46" = "SD", "47" = "TN", "48" = "TX",
+      "49" = "UT", "50" = "VT", "51" = "VA", "53" = "WA",
+      "54" = "WV", "55" = "WI", "56" = "WY",
+      .default = NA_character_
+    ),
     
     metro_cat = factor(GTMETSTA),
     
@@ -407,6 +426,18 @@ data_0511 <- data_0511 %>%
 data_0511_clean <- data_0511 %>%
   select(
     -inschool, -employed, -fulltime, -spouse_pres, -income, -sex, -education,
-    -married, -citizen, -homeowner)
+    -married, -citizen, -homeowner, -GESTFIPS)
 
+# Getting delinquency ----
+# skip 8 for proper headers.
+deldat <- read_excel("../Dataset/area_report_by_year.xlsx", 
+                     sheet = "mortgage_delinq", skip=8, n_max = 52)
+del_lookup <- deldat %>% mutate(avg_delinquency = 
+            rowMeans(
+              across(c('Q4_2006','Q4_2007','Q4_2008','Q4_2009','Q4_2010')),
+              na.rm = TRUE
+            )) %>% select(state, avg_delinquency)
+
+data_0511_clean <- data_0511_clean %>%
+  left_join(del_lookup, by="state")
 saveRDS(data_0511_clean, "data_0511_clean.rds")

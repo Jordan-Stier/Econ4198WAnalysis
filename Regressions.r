@@ -157,35 +157,24 @@ coef_names <- c(
   "(Intercept)" = "Constant",
   "homeowner_catHomeowner" = "Homeowner",
   "year_cat2011" = "Year: 2011",
-  "age" = "Age",
-  "sex_catFemale" = "Female",
-  "race_catMultiracial" = "Multiracial",
-  "race_catOther single race" = "Other race",
-  "race_catWhite" = "White",
-  "education_catHigh school graduate" = "High school graduate",
-  "education_catSome college, no degree" = "Some college",
-  "education_catAssociate degree" = "Associate degree",
-  "education_catBachelor's degree" = "Bachelor's degree",
-  "education_catMaster's degree" = "Master's degree",
-  "education_catProfessional degree" = "Professional degree",
-  "education_catDoctoral degree" = "Doctoral degree",
-  "income_cat$15,000-$34,999" = "Income: $15,000–$34,999",
-  "income_cat$35,000-$59,999" = "Income: $35,000–$59,999",
-  "income_cat$60,000-$99,999" = "Income: $60,000–$99,999",
-  "income_cat$100,000+" = "Income: $100,000+",
-  "employed_catUnemployed" = "Unemployed",
-  "employed_catNot in labor force" = "Not in labor force",
-  "married_catMarried, spouse present" = "Married, spouse present",
-  "married_catNever married" = "Never married",
-  "married_catPreviously married" = "Previously married",
-  "children" = "Number of children",
   "homeowner_catHomeowner:year_cat2011" = "Homeowner × 2011"
 )
+# defining control rows
+control_rows <- data.frame(
+  term = c("Demographic Controls", "Socioeconomic Controls",
+           "Household Controls"),
+  `1` = c("", "", ""),
+  `2` = c("Yes", "", ""),
+  `3` = c("Yes", "Yes",""),
+  `4` = c("Yes", "Yes", "Yes"),
+  check.names = FALSE
+)
+attr(control_rows, "position")<-"coef_end"
 
 # formatted tables
 ft1 <- modelsummary(
   mdl_vol_partic_aggr,
-  coef_rename = coef_names,
+  coef_map = coef_names,
   model_names = c(
     "Baseline",
     "Demographic Controls",
@@ -193,6 +182,7 @@ ft1 <- modelsummary(
     "Full Model"
   ),
   stars = TRUE,
+  add_rows = control_rows,
   output = "flextable"
 )
 
@@ -204,7 +194,7 @@ save_as_docx(ft1, path = "reg1-volpart_table.docx")
 
 ft2 <- modelsummary(
   mdl_volunteer_inten_aggr,
-  coef_rename = coef_names,
+  coef_map = coef_names,
   model_names = c(
     "Baseline",
     "Demographic Controls",
@@ -212,6 +202,7 @@ ft2 <- modelsummary(
     "Full Model"
   ),
   stars = TRUE,
+  add_rows = control_rows,
   output = "flextable"
 )
 
@@ -223,7 +214,7 @@ save_as_docx(ft2, path = "reg2-volint_table.docx")
 
 ft3 <- modelsummary(
   mdl_civic_partic_aggr,
-  coef_rename = coef_names,
+  coef_map = coef_names,
   model_names = c(
     "Baseline",
     "Demographic Controls",
@@ -231,6 +222,7 @@ ft3 <- modelsummary(
     "Full Model"
   ),
   stars = TRUE,
+  add_rows = control_rows,
   output = "flextable"
 )
 
@@ -240,23 +232,9 @@ ft3 <- fontsize(ft3, size = 9, part = "all")
 ft3 <- align(ft3, align = "center", part = "all")
 save_as_docx(ft3, path = "reg3-civpart_table.docx")
 
-modelsummary::modelsummary(
-  mdl_civic_partic_aggr,
-  coef_rename = coef_names,
-  model_names = c(
-    "unadjust" = "Baseline",
-    "demog" = "Demographic Controls",
-    "socio" = "Socioeconomic Controls",
-    "household" = "Full Model"
-  ),
-  output = "reg3-civpart_table.html",
-  fmt = 3,
-  stars = TRUE
-)
-
 ft4 <- modelsummary(
   mdl_civic_inten_aggr,
-  coef_rename = coef_names,
+  coef_map = coef_names,
   model_names = c(
     "Baseline",
     "Demographic Controls",
@@ -264,6 +242,7 @@ ft4 <- modelsummary(
     "Full Model"
   ),
   stars = TRUE,
+  add_rows = control_rows,
   output = "flextable"
 )
 
