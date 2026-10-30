@@ -12,20 +12,28 @@ library(modelsummary)
 
 housing_data <-readRDS("data_0511_clean.rds")
 
+# Done due to skew in the data
+housing_data$volunteer_particip <- as.integer(housing_data$volunteer_mins >0)
+housing_data$civic_particip <- as.integer(housing_data$civic_mins >0)
+# These 3 are placebos
+housing_data$sports_particip <- as.integer(housing_data$sports_mins >0)
+housing_data$socgen_particip <- as.integer(housing_data$socgen_mins >0)
+housing_data$socevent_particip <- as.integer(housing_data$socevent_mins >0)
+
+# Dif ids by year
+housing_data <- housing_data %>%
+  mutate(strat_yr = interaction(year_cat, GEPSEUST, drop = TRUE),
+         clust_yr = interaction(year_cat, GEPSEUCL, drop = TRUE))
+
+# need to use this, i was getting insane results cause I wasn't.
 # haven't decided if I'll use svyglm yet
-design <- svydesign(
-  ids = ~GEPSEUCL,
-  strata = ~GEPSEUST,
-  weights = ~TUFINLWGT,
-  data = housing_data,
-  nest = TRUE
+svdes <- svydesign(
+  ids = ~clust_yr, strata = ~strat_yr,
+  weights = ~TUFINLWGT, nest = TRUE, data = housing_data
 )
 
 # Lazy models ----
 ## Probit/Intensity given participation ----
-# Done due to skew in the data
-housing_data$volunteer_particip <- as.integer(housing_data$volunteer_mins >0)
-housing_data$civic_particip <- as.integer(housing_data$civic_mins >0)
 
 # Regressions
 # Originally used owner_cat + age + sex_cat +
@@ -37,7 +45,7 @@ housing_data$civic_particip <- as.integer(housing_data$civic_mins >0)
 # controls in each.
 run_models <- function(
     outcome, data = housing_data,
-    subset = NULL, intensity = FALSE){
+    subset = NULL, intensity = FALSE, survey_design = svdes){
   
   subset_expr <- enquo(subset)
   # only uses subset if its given:
@@ -45,94 +53,43 @@ run_models <- function(
      !missing(subset)){
     data <- data %>% filter(!!subset_expr)
   }
-  
+  # Intensity models: only people who participated
   if (intensity) {
-    # Only people who participated
     data <- data %>% filter(.data[[outcome]] > 0)
-    # Model 1: Unadjusted
-    m1 <- lm(
-      as.formula(paste(outcome, "~ homeowner_cat*year_cat")),
-      data = data,
-      weights = TUFINLWGT
-    )
-    # Model 2: Demographic
-    m2 <- lm(
-      as.formula(paste(
-        outcome,
-        "~ homeowner_cat*year_cat + age + sex_cat + race_cat"
-      )),
-      data = data,
-      weights = TUFINLWGT
-    )
-    # Model 3: SocioEcon
-    m3 <- lm(
-      as.formula(paste(
-        outcome,
-        "~ homeowner_cat*year_cat + age + sex_cat + race_cat +",
-        "education_cat + income_cat + employed_cat"
-      )),
-      data = data,
-      weights = TUFINLWGT
-    )
-    # Model 4: Household
-    m4 <- lm(
-      as.formula(paste(
-        outcome,
-        "~ homeowner_cat*year_cat + age + sex_cat + race_cat +",
-        "education_cat + income_cat + employed_cat +",
-        "married_cat + children"
-      )),
-      data = data,
-      weights = TUFINLWGT
-    )
-  } else {
-    # Model 1: Unadjusted
-    m1 <- glm(
-      as.formula(paste(
-        outcome, "~homeowner_cat*year_cat"
-      )),
-      data = data,
-      family = binomial(link = "probit"),
-      weights = TUFINLWGT
-    )
-    # Model 2: Demographic
-    m2 <- glm(
-      as.formula(paste(
-        outcome, "~homeowner_cat*year_cat + age + sex_cat + race_cat"
-      )),
-      data = data,
-      family = binomial(link = "probit"),
-      weights = TUFINLWGT
-    )
-    # Model 3: SocioEcon
-    m3 <- glm(
-      as.formula(paste(
-        outcome, "~homeowner_cat*year_cat + age + sex_cat + race_cat +",
-        "education_cat + income_cat + employed_cat"
-      )),
-      data = data,
-      family = binomial(link = "probit"),
-      weights = TUFINLWGT
-    )
-    # Model 4: Household
-    m4 <- glm(
-      as.formula(paste(
-        outcome, "~homeowner_cat*year_cat + age + sex_cat + race_cat +",
-        "education_cat + income_cat + employed_cat +",
-        "married_cat + children"
-      )),
-      data = data,
-      family = binomial(link = "probit"),
-      weights = TUFINLWGT
-    )
   }
-  # Return models for inspection
-  list(
-    "Baseline" = m1,
-    "Demographic Controls" = m2,
-    "Socioeconomic Controls" = m3,
-    "Full Model" = m4
+
+  # Survey design, built once per call
+  des <- survey_design
+  if (!outcome %in% names(des$variables))
+    stop("Outcome '", outcome, "' is not in the survey design data")
+  
+  keep <- rep(TRUE, nrow(des$variables))
+  subset_expr <- enquo(subset)
+  if (!rlang::quo_is_null(subset_expr)) {
+    keep <- keep & rlang::eval_tidy(subset_expr, data = des$variables)
+  }
+  if (intensity) keep <- keep & des$variables[[outcome]] > 0
+  keep[is.na(keep)] <- FALSE
+  des <- des[which(keep), ]   # subsets the design, keeping the full variance structure
+  options(survey.lonely.psu = "adjust")
+  
+  # Right-hand sides, with more controls in each
+  rhs <- c(
+    "Baseline"               = "homeowner_cat*year_cat",
+    "Demographic Controls"   = "homeowner_cat*year_cat + age + sex_cat + race_cat",
+    "Socioeconomic Controls" = paste("homeowner_cat*year_cat + age + sex_cat + race_cat +",
+                                     "education_cat + income_cat + employed_cat"),
+    "Full Model"             = paste("homeowner_cat*year_cat + age + sex_cat + race_cat +",
+                                     "education_cat + income_cat + employed_cat +",
+                                     "married_cat + children")
   )
+  # probit for participation, weighted OLS for minutes
+  fam <- if (intensity) gaussian() else quasibinomial(link = "probit")
+  
+  # returns a named list, so sport_mdl$`Full Model` still works
+  lapply(rhs, function(r) {
+    svyglm(as.formula(paste(outcome, "~", r)), design = des, family = fam)
+  })
 }
 
 ### Volunteer ----
@@ -170,84 +127,50 @@ control_rows <- data.frame(
   check.names = FALSE
 )
 attr(control_rows, "position")<-"coef_end"
-
 # formatted tables
-ft1 <- modelsummary(
-  mdl_vol_partic_aggr,
-  coef_map = coef_names,
-  model_names = c(
-    "Baseline",
-    "Demographic Controls",
-    "Socioeconomic Controls",
-    "Full Model"
-  ),
-  stars = TRUE,
-  add_rows = control_rows,
-  output = "flextable"
+format_reg_table <- function(models, filename,
+                             coef_mapping,
+                             rows_controls,
+                             model_names = c(
+                               "Baseline",
+                               "Demographic Controls",
+                               "Socioeconomic Controls",
+                               "Full Model"
+                             )) {
+  
+  ft <- modelsummary(
+    models,
+    coef_map = coef_mapping,
+    model_names = model_names,
+    stars = TRUE,
+    add_rows = rows_controls,
+    output = "flextable"
+  )
+  
+  ft <- ft |>
+    theme_booktabs() |>
+    autofit() |>
+    fontsize(size = 9, part = "all") |>
+    align(align = "center", part = "all")
+  
+  save_as_docx(ft, path = filename)
+  
+  return(ft)
+}
+
+model_tables <- list(
+  "reg1-volpart_table.docx" = mdl_vol_partic_aggr,
+  "reg2-volint_table.docx"  = mdl_volunteer_inten_aggr,
+  "reg3-civpart_table.docx" = mdl_civic_partic_aggr,
+  "reg4-civint_table.docx"  = mdl_civic_inten_aggr
 )
 
-ft1 <- theme_booktabs(ft1)
-ft1 <- autofit(ft1)
-ft1 <- fontsize(ft1, size = 9, part = "all")
-ft1 <- align(ft1, align = "center", part = "all")
-save_as_docx(ft1, path = "reg1-volpart_table.docx")
+ft_list <- lapply(names(model_tables), function(filename) {
+  format_reg_table(
+    models = model_tables[[filename]],
+    filename = filename, coef_mapping = coef_names,
+    rows_controls = control_rows
+  )
+})
 
-ft2 <- modelsummary(
-  mdl_volunteer_inten_aggr,
-  coef_map = coef_names,
-  model_names = c(
-    "Baseline",
-    "Demographic Controls",
-    "Socioeconomic Controls",
-    "Full Model"
-  ),
-  stars = TRUE,
-  add_rows = control_rows,
-  output = "flextable"
-)
-
-ft2 <- theme_booktabs(ft2)
-ft2 <- autofit(ft2)
-ft2 <- fontsize(ft2, size = 9, part = "all")
-ft2 <- align(ft2, align = "center", part = "all")
-save_as_docx(ft2, path = "reg2-volint_table.docx")
-
-ft3 <- modelsummary(
-  mdl_civic_partic_aggr,
-  coef_map = coef_names,
-  model_names = c(
-    "Baseline",
-    "Demographic Controls",
-    "Socioeconomic Controls",
-    "Full Model"
-  ),
-  stars = TRUE,
-  add_rows = control_rows,
-  output = "flextable"
-)
-
-ft3 <- theme_booktabs(ft3)
-ft3 <- autofit(ft3)
-ft3 <- fontsize(ft3, size = 9, part = "all")
-ft3 <- align(ft3, align = "center", part = "all")
-save_as_docx(ft3, path = "reg3-civpart_table.docx")
-
-ft4 <- modelsummary(
-  mdl_civic_inten_aggr,
-  coef_map = coef_names,
-  model_names = c(
-    "Baseline",
-    "Demographic Controls",
-    "Socioeconomic Controls",
-    "Full Model"
-  ),
-  stars = TRUE,
-  add_rows = control_rows,
-  output = "flextable"
-)
-
-ft4 <- theme_booktabs(ft4)
-ft4 <- autofit(ft4)
-ft4 <- fontsize(ft4, size = 9, part = "all")
-ft4 <- align(ft4, align = "center", part = "all")
-save_as_docx(ft4, path = "reg4-civint_table.docx")
+names(ft_list) <- names(model_tables)

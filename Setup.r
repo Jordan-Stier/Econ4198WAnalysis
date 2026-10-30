@@ -45,6 +45,8 @@ cps_11_trimmed<-cps_11%>%select(
   PTDTRACE,      # Race
   PEHRUSLT,      # Usual hours worked per week
   
+  GEPSEUST,      # Pseudo collapsed sampling stratum
+  GEPSEUCL,      # Pseudo PSU/cluster
   GESTFIPS,       # State
   GTMETSTA       # Metropolitan area status
   ) %>% rename(
@@ -96,8 +98,6 @@ activity_11_trimmed<-activity_11%>%mutate(
     ),
   )%>%select(
   tucaseid,     # ATUS case ID
-  t120302,      # Tobacco/drug use
-  t120404,      # Gambling
   t140101,      # Religious services
   volunteer_mins, # Volunteering
   socevent_mins, # Social event att/host
@@ -105,8 +105,7 @@ activity_11_trimmed<-activity_11%>%mutate(
   sports_mins,   # Play sports
   civic_mins # Civic obligations/participation
   ) %>% rename(
-    TUCASEID=tucaseid, drug_mins=t120302,
-    gamble_mins=t120404, religserv_mins=t140101
+    TUCASEID=tucaseid, religserv_mins=t140101
   )
 
 data_11 <- activity_11_trimmed %>%
@@ -142,6 +141,8 @@ cps_05_trimmed <- cps_05 %>%
     PTDTRACE,      # Race
     PEHRUSLT,      # Usual hours worked per week
     
+    GEPSEUST,      # Pseudo collapsed sampling stratum
+    GEPSEUCL,      # Pseudo PSU/cluster
     GESTFIPS,       # State
     GTMETSTA
   ) %>%
@@ -202,8 +203,6 @@ activity_05_trimmed <- activity_05 %>%
   ) %>%
   select(
     TUCASEID,       # ATUS case ID
-    t120302,        # Tobacco/drug use
-    t120404,        # Gambling
     t140101,        # Religious services
     volunteer_mins,
     socevent_mins,
@@ -212,8 +211,6 @@ activity_05_trimmed <- activity_05 %>%
     civic_mins # Civic obligations/participation
   ) %>%
   rename(
-    drug_mins = t120302,
-    gamble_mins = t120404,
     religserv_mins = t140101
   )
 
@@ -432,11 +429,15 @@ data_0511_clean <- data_0511 %>%
 # skip 8 for proper headers.
 deldat <- read_excel("../Dataset/area_report_by_year.xlsx", 
                      sheet = "mortgage_delinq", skip=8, n_max = 52)
-del_lookup <- deldat %>% mutate(avg_delinquency = 
+del_lookup <- deldat %>% mutate(delinquency_rate = 
             rowMeans(
               across(c('Q4_2006','Q4_2007','Q4_2008','Q4_2009','Q4_2010')),
               na.rm = TRUE
-            )) %>% select(state, avg_delinquency)
+            )) %>% select(state, delinquency_rate) %>%
+            mutate(
+              delinq_centered = delinquency_rate - 
+                mean(delinquency_rate, na.rm = TRUE)
+            )
 
 data_0511_clean <- data_0511_clean %>%
   left_join(del_lookup, by="state")
