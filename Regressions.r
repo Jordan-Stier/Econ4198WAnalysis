@@ -2,6 +2,8 @@ library(haven)
 library(rlang)
 library(dplyr)
 library(tidyr)
+library(AER)
+library(censReg)
 library(ggplot2)
 library(lmtest)
 library(marginaleffects)
@@ -13,12 +15,12 @@ library(modelsummary)
 housing_data <-readRDS("data_0511_clean.rds")
 
 # Done due to skew in the data
+# Doing these separately to remember what my target vars are
 housing_data$volunteer_particip <- as.integer(housing_data$volunteer_mins >0)
 housing_data$civic_particip <- as.integer(housing_data$civic_mins >0)
-# These 3 are placebos
+# These 2 are placebos
 housing_data$sports_particip <- as.integer(housing_data$sports_mins >0)
-housing_data$socgen_particip <- as.integer(housing_data$socgen_mins >0)
-housing_data$socevent_particip <- as.integer(housing_data$socevent_mins >0)
+housing_data$social_particip <- as.integer(housing_data$social_mins >0)
 
 # Dif ids by year
 housing_data <- housing_data %>%
@@ -27,88 +29,67 @@ housing_data <- housing_data %>%
 
 # need to use this, i was getting insane results cause I wasn't.
 # haven't decided if I'll use svyglm yet
-svdes <- svydesign(
-  ids = ~clust_yr, strata = ~strat_yr,
-  weights = ~TUFINLWGT, nest = TRUE, data = housing_data
-)
+# svdes <- svydesign(
+#   ids = ~clust_yr, strata = ~strat_yr,
+#   weights = ~TUFINLWGT, nest = TRUE, data = housing_data
+# )
 
 # Lazy models ----
 ## Probit/Intensity given participation ----
 
 # Regressions
-# Originally used owner_cat + age + sex_cat +
-# education_cat + income_cat + race_cat + married_cat +
-# employed_cat + workhours_cat + children + metro_cat
-# But that lowers statistical confidence
+# Using a suite to suggest original was unbiased
 
 # Runs a suite of models on participation, with more
 # controls in each.
 run_models <- function(
-    outcome, data = housing_data,
-    subset = NULL, intensity = FALSE, survey_design = svdes){
+    outcome, data = housing_data, subset = NULL, survey_design = svdes) {
   
   subset_expr <- enquo(subset)
-  # only uses subset if its given:
-  if(!rlang::quo_is_null(subset_expr) &&
-     !missing(subset)){
+  
+  if (!rlang::quo_is_null(subset_expr) && !missing(subset)) {
     data <- data %>% filter(!!subset_expr)
   }
-  # Intensity models: only people who participated
-  if (intensity) {
-    data <- data %>% filter(.data[[outcome]] > 0)
-  }
-
-  # Survey design, built once per call
-  des <- survey_design
-  if (!outcome %in% names(des$variables))
-    stop("Outcome '", outcome, "' is not in the survey design data")
   
-  keep <- rep(TRUE, nrow(des$variables))
-  subset_expr <- enquo(subset)
-  if (!rlang::quo_is_null(subset_expr)) {
-    keep <- keep & rlang::eval_tidy(subset_expr, data = des$variables)
-  }
-  if (intensity) keep <- keep & des$variables[[outcome]] > 0
-  keep[is.na(keep)] <- FALSE
-  des <- des[which(keep), ]   # subsets the design, keeping the full variance structure
-  options(survey.lonely.psu = "adjust")
+  # Model pieces
+  base  <- "homeowner_cat*year_cat"
+  demog <- "age + sex_cat + race_cat + relig_cat"
+  socio <- "education_cat + income_cat + employed_cat"
+  hh    <- "married_cat + children"
   
-  # Right-hand sides, with more controls in each
   rhs <- c(
-    "Baseline"               = "homeowner_cat*year_cat",
-    "Demographic Controls"   = "homeowner_cat*year_cat + age + sex_cat + race_cat",
-    "Socioeconomic Controls" = paste("homeowner_cat*year_cat + age + sex_cat + race_cat +",
-                                     "education_cat + income_cat + employed_cat"),
-    "Full Model"             = paste("homeowner_cat*year_cat + age + sex_cat + race_cat +",
-                                     "education_cat + income_cat + employed_cat +",
-                                     "married_cat + children")
+    "Baseline"               = base,
+    "Demographic Controls"   = paste(base, demog, sep = " + "),
+    "Socioeconomic Controls" = paste(base, demog, socio, sep = " + "),
+    "Full Model"             = paste(base, demog, socio, hh, sep = " + ")
   )
-  # probit for participation, weighted OLS for minutes
-  fam <- if (intensity) gaussian() else quasibinomial(link = "probit")
   
-  # returns a named list, so sport_mdl$`Full Model` still works
+  # Weighted Tobit with robust SEs
   lapply(rhs, function(r) {
-    svyglm(as.formula(paste(outcome, "~", r)), design = des, family = fam)
+    survival::survreg(
+      as.formula(paste(
+        "survival::Surv(", outcome, ", ",
+        outcome, " > 0, type = 'left') ~ ", r
+      )),
+      data = data,
+      weights = TUFINLWGT,
+      dist = "gaussian",
+      robust = TRUE
+    )
   })
 }
 
 ### Volunteer ----
-mdl_vol_partic_aggr <- run_models("volunteer_particip")
-mdl_volunteer_inten_aggr <- run_models("volunteer_mins",
-                                  intensity = TRUE)
+mdl_volunteer <- run_models("volunteer_mins")
 ### Civic ----
-mdl_civic_partic_aggr <- run_models("civic_particip")
-mdl_civic_inten_aggr <- run_models("civic_mins",
-                              intensity = TRUE)
+mdl_civic <- run_models("civic_mins")
+### Sports ----
+mdl_sports <- run_models("sports_mins")
+### Socializing ----
+mdl_social <- run_models("social_mins")
 
 # tables ----
-lapply(mdl_volunteer_inten_aggr, function(m) {
-  if (inherits(m, "lm") || inherits(m, "glm")) {
-    names(coef(m))
-  } else {
-    class(m)
-  }
-})
+# May need to change these since they're tobit now.
 # Coef map
 coef_names <- c(
   "(Intercept)" = "Constant",
@@ -157,12 +138,12 @@ format_reg_table <- function(models, filename,
   
   return(ft)
 }
-
+# Files for model tables ----
 model_tables <- list(
-  "reg1-volpart_table.docx" = mdl_vol_partic_aggr,
-  "reg2-volint_table.docx"  = mdl_volunteer_inten_aggr,
-  "reg3-civpart_table.docx" = mdl_civic_partic_aggr,
-  "reg4-civint_table.docx"  = mdl_civic_inten_aggr
+  "reg1-vol_table.docx" = mdl_volunteer,
+  "reg2-civ_table.docx" = mdl_civic,
+  "reg3-sport_table.docx" = mdl_sports,
+  "reg4-soc_table.docx" = mdl_social
 )
 
 ft_list <- lapply(names(model_tables), function(filename) {

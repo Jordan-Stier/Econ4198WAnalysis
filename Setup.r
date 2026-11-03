@@ -10,6 +10,8 @@
 #install.packages("knitr")
 #install.packages("modelsummary")
 #install.packages("pandoc")
+#install.packages("AER")
+#install.packages("censReg")
 library(haven)
 library(readxl)
 library(dplyr)
@@ -80,12 +82,8 @@ activity_11_trimmed<-activity_11%>%mutate(
       across(starts_with("t15")),
       na.rm = TRUE
     ),
-    socevent_mins = rowSums(
-      across(starts_with("t1202")),
-      na.rm = TRUE
-    ),
-    socgen_mins = rowSums(
-      across(starts_with("t1201")),
+    social_mins = rowSums(
+      across(c(starts_with("t1202"),starts_with("t1201"))),
       na.rm = TRUE
     ),
     sports_mins = rowSums(
@@ -96,16 +94,20 @@ activity_11_trimmed<-activity_11%>%mutate(
       across(c(t100201, t100305)),
       na.rm = TRUE
     ),
+    # This is for controls
+    relig_mins = rowSums(
+      across(starts_with("t14")),
+      na.rm = TRUE
+    )
   )%>%select(
   tucaseid,     # ATUS case ID
-  t140101,      # Religious services
   volunteer_mins, # Volunteering
-  socevent_mins, # Social event att/host
-  socgen_mins,  # General socializing
+  social_mins, # Socializing
   sports_mins,   # Play sports
-  civic_mins # Civic obligations/participation
+  civic_mins, # Civic obligations/participation
+  relig_mins
   ) %>% rename(
-    TUCASEID=tucaseid, religserv_mins=t140101
+    TUCASEID=tucaseid
   )
 
 data_11 <- activity_11_trimmed %>%
@@ -184,12 +186,8 @@ activity_05_trimmed <- activity_05 %>%
       across(starts_with("t15")),
       na.rm = TRUE
     ),
-    socevent_mins = rowSums(
-      across(starts_with("t1202")),
-      na.rm = TRUE
-    ),
-    socgen_mins = rowSums(
-      across(starts_with("t1201")),
+    social_mins = rowSums(
+      across(c(starts_with("t1202"),starts_with("t1201"))),
       na.rm = TRUE
     ),
     sports_mins = rowSums(
@@ -199,19 +197,20 @@ activity_05_trimmed <- activity_05 %>%
     civic_mins = rowSums(
       across(c(t100201, t100299, t100303)),
       na.rm = TRUE
+    ),
+    # This is for controls
+    relig_mins = rowSums(
+      across(starts_with("t14")),
+      na.rm = TRUE
     )
   ) %>%
   select(
     TUCASEID,       # ATUS case ID
-    t140101,        # Religious services
     volunteer_mins,
-    socevent_mins,
-    socgen_mins,
+    social_mins,
     sports_mins,
-    civic_mins # Civic obligations/participation
-  ) %>%
-  rename(
-    religserv_mins = t140101
+    civic_mins, # Civic obligations/participation
+    relig_mins
   )
 
 # Joining
@@ -412,6 +411,7 @@ data_0511 <- data_0511 %>%
     
     metro_cat = factor(GTMETSTA),
     
+    relig_cat = as.integer(relig_mins >0),
     # YEAR AND POST-PERIOD INDICATORS.
     # Both are used in case I add more years for parallel-trends
     year_cat = factor(year),
@@ -427,18 +427,19 @@ data_0511_clean <- data_0511 %>%
 
 # Getting delinquency ----
 # skip 8 for proper headers.
-deldat <- read_excel("../Dataset/area_report_by_year.xlsx", 
-                     sheet = "mortgage_delinq", skip=8, n_max = 52)
-del_lookup <- deldat %>% mutate(delinquency_rate = 
-            rowMeans(
-              across(c('Q4_2006','Q4_2007','Q4_2008','Q4_2009','Q4_2010')),
-              na.rm = TRUE
-            )) %>% select(state, delinquency_rate) %>%
-            mutate(
-              delinq_centered = delinquency_rate - 
-                mean(delinquency_rate, na.rm = TRUE)
-            )
+# deldat <- read_excel("../Dataset/area_report_by_year.xlsx", 
+#                      sheet = "mortgage_delinq", skip=8, n_max = 52)
+# del_lookup <- deldat %>% mutate(delinquency_rate = 
+#             rowMeans(
+#               across(c('Q4_2006','Q4_2007','Q4_2008','Q4_2009','Q4_2010')),
+#               na.rm = TRUE
+#             )) %>% select(state, delinquency_rate) %>%
+#             mutate(
+#               delinq_centered = delinquency_rate - 
+#                 mean(delinquency_rate, na.rm = TRUE)
+#             )
+# 
+# data_0511_clean <- data_0511_clean %>%
+#   left_join(del_lookup, by="state")
 
-data_0511_clean <- data_0511_clean %>%
-  left_join(del_lookup, by="state")
 saveRDS(data_0511_clean, "data_0511_clean.rds")
