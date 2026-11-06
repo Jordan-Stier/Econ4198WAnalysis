@@ -7,12 +7,15 @@ library(lmtest)
 library(marginaleffects)
 library(survey)
 library(knitr)
+library(flextable)
 housing_data <-readRDS("data_0511_clean.rds")
 
 # Tables ----
 summary_vars <- c(
   "volunteer_mins",
   "civic_mins",
+  "social_mins",
+  "sports_mins",
   "age",
   "children"
 )
@@ -23,16 +26,40 @@ summary_table <- data.frame(
   Mean = sapply(housing_data[summary_vars], function(x) mean(x, na.rm = TRUE)),
   SD = sapply(housing_data[summary_vars], function(x) sd(x, na.rm = TRUE)),
   Minimum = sapply(housing_data[summary_vars], function(x) min(x, na.rm = TRUE)),
-  Maximum = sapply(housing_data[summary_vars], function(x) max(x, na.rm = TRUE))
+  Median = sapply(housing_data[summary_vars], function(x) median(x, na.rm = TRUE)),
+  Maximum = sapply(housing_data[summary_vars], function(x) max(x, na.rm = TRUE)),
+  Nonzero_N = sapply(housing_data[summary_vars], function(x) sum(x > 0, na.rm = TRUE)),
+  Median_Positive = sapply(housing_data[summary_vars], function(x) {
+    if (any(x > 0, na.rm = TRUE)) median(x[x > 0], na.rm = TRUE) else NA_real_
+  })
 )
-
-write.table(
-  summary_table,
-  "summary_statistics.tsv",
-  sep = "\t",
-  row.names = FALSE,
-  quote = FALSE
+summary_table$Variable <- c(
+  "Volunteer Minutes",
+  "Civic Engagement Minutes",
+  "Socializing Minutes",
+  "Sports and Exercise Minutes",
+  "Age",
+  "Number of Children"
 )
+summary_table[] <- lapply(summary_table, function(x) {
+  if (is.numeric(x)) sprintf("%.2f", x) else x
+})
+ft <- flextable(summary_table) |>
+  autofit() |>
+  set_table_properties(layout = "autofit", width = 1)|>
+  set_header_labels(
+    Variable = "Activity / Characteristic",
+    N = "N",
+    Mean = "Mean",
+    SD = "Std. Dev.",
+    Minimum = "Minimum",
+    Median = "Median",
+    Maximum = "Maximum",
+    Nonzero_N = "Nonzero Observations",
+    Median_Positive = "Median (Positive Values)"
+  )
+# Note: Make Landscape
+save_as_docx(ft, path = "summary_statistics.docx")
 
 categorical_vars <- c(
   "homeowner_cat", "education_cat", "race_cat", "sex_cat",
@@ -84,6 +111,16 @@ for (v in categorical_vars) {
   
   categorical_table <- rbind(categorical_table, temp)
 }
+
+categorical_table <- rbind(
+  categorical_table,
+  data.frame(
+    Variable = "Total Observations",
+    Type = "",
+    N = nrow(housing_data),
+    Percent = 100
+  )
+)
 
 write.table(
   categorical_table,

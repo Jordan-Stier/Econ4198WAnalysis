@@ -236,9 +236,7 @@ data_0511 <- data_0511 %>%
       education == 40 ~ "Some college, no degree",
       education %in% c(41, 42) ~ "Associate degree",
       education == 43 ~ "Bachelor's degree",
-      education == 44 ~ "Master's degree",
-      education == 45 ~ "Professional degree",
-      education == 46 ~ "Doctoral degree",
+      education %in% 44:46 ~ "Master's degree or higher",
       TRUE ~ NA_character_
     ),
     
@@ -250,9 +248,7 @@ data_0511 <- data_0511 %>%
         "Some college, no degree",
         "Associate degree",
         "Bachelor's degree",
-        "Master's degree",
-        "Professional degree",
-        "Doctoral degree"
+        "Master's degree or higher"
       ),
       ordered = FALSE
     ),
@@ -263,11 +259,13 @@ data_0511 <- data_0511 %>%
     race_cat = case_when(
       race == 1 ~ "White",
       race == 2 ~ "Black",
-      race %in% 3:5 ~ "Other single race",
-      race %in% 6:19 ~ "Multiracial",
+      #race %in% 3:5 ~ "Other single race",
+      #race %in% 6:19 ~ "Multiracial",
+      race %in% 3:19 ~ "Other / Multiracial",
       TRUE ~ NA_character_
     ),
-    race_cat = factor(race_cat),
+    race_cat = factor(race_cat,
+        levels = c("White", "Black", "Other / Multiracial")),
     
     # SEX: 1 = male, 2 = female.
     sex_cat = factor(
@@ -277,10 +275,8 @@ data_0511 <- data_0511 %>%
     ),
     
     # MARITAL STATUS: Combine widowed, divorced, and separated.
-    # Keep married spouse absent separate from married spouse present.
     married_cat = case_when(
-      married == 1 ~ "Married, spouse present",
-      married == 2 ~ "Married, spouse absent",
+      married %in% 1:2 ~ "Married",
       married %in% c(3, 4, 5) ~ "Previously married",
       married == 6 ~ "Never married",
       TRUE ~ NA_character_
@@ -390,23 +386,6 @@ data_0511 <- data_0511 %>%
         "Unmarried partner present",
         "Neither present"
       )
-    ),
-    state = recode(
-      as.character(GESTFIPS),
-      "1" = "AL", "2" = "AK", "4" = "AZ", "5" = "AR",
-      "6" = "CA", "8" = "CO", "9" = "CT", "10" = "DE",
-      "11" = "DC", "12" = "FL", "13" = "GA", "15" = "HI",
-      "16" = "ID", "17" = "IL", "18" = "IN", "19" = "IA",
-      "20" = "KS", "21" = "KY", "22" = "LA", "23" = "ME",
-      "24" = "MD", "25" = "MA", "26" = "MI", "27" = "MN",
-      "28" = "MS", "29" = "MO", "30" = "MT", "31" = "NE",
-      "32" = "NV", "33" = "NH", "34" = "NJ", "35" = "NM",
-      "36" = "NY", "37" = "NC", "38" = "ND", "39" = "OH",
-      "40" = "OK", "41" = "OR", "42" = "PA", "44" = "RI",
-      "45" = "SC", "46" = "SD", "47" = "TN", "48" = "TX",
-      "49" = "UT", "50" = "VT", "51" = "VA", "53" = "WA",
-      "54" = "WV", "55" = "WI", "56" = "WY",
-      .default = NA_character_
     ),
     
     metro_cat = factor(GTMETSTA),

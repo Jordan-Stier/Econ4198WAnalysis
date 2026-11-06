@@ -50,6 +50,7 @@ run_models <- function(
   if (!rlang::quo_is_null(subset_expr) && !missing(subset)) {
     data <- data %>% filter(!!subset_expr)
   }
+  data <- droplevels(data)
   
   # Model pieces
   base  <- "homeowner_cat*year_cat"
@@ -78,15 +79,238 @@ run_models <- function(
     )
   })
 }
+# Avg marginal effects. Currently only for homeowner:year interaction.
+ame_inference <- function(m) {
+  
+  V <- vcov(m)
+  b <- coef(m)
+  
+  # Check whether the covariance matrix includes log(scale)
+  extra <- setdiff(colnames(V), names(b))
+  
+  if (length(extra) == 1 &&
+      grepl("scale", extra, ignore.case = TRUE)) {
+    scale_name <- extra
+    include_scale <- TRUE
+  } else if (length(extra) == 0) {
+    include_scale <- FALSE
+  } else {
+    stop("Unexpected variance-covariance matrix structure.")
+  }
+  
+  # Parameter vector
+  pars <- b
+  
+  if (include_scale) {
+    pars <- c(pars, setNames(log(m$scale), scale_name))
+  }
+  
+  V <- V[names(pars), names(pars), drop = FALSE]
+  
+  # Recalculate AMEs at a given parameter vector
+  calculate <- function(p) {
+    mm <- m
+    mm$coefficients <- p[names(b)]
+    
+    if (include_scale) {
+      mm$scale <- exp(p[scale_name])
+    }
+    
+    as.vector(t(effects_ame(mm)))
+  }
+  
+  estimates <- calculate(pars)
+  
+  # Numerical gradient (central differences)
+  G <- matrix(
+    NA_real_,
+    nrow = length(estimates),
+    ncol = length(pars)
+  )
+  
+  for (j in seq_along(pars)) {
+    
+    step <- 1e-5 * max(1, abs(pars[j]))
+    
+    p_plus <- pars
+    p_minus <- pars
+    
+    p_plus[j] <- p_plus[j] + step
+    p_minus[j] <- p_minus[j] - step
+    
+    G[, j] <- (
+      calculate(p_plus) - calculate(p_minus)
+    ) / (2 * step)
+  }
+  
+  # Delta-method variance
+  ame_var <- G %*% V %*% t(G)
+  ame_se <- sqrt(pmax(diag(ame_var), 0))
+  
+  # Organize results
+  original <- effects_ame(m)
+  
+  est <- matrix(
+    estimates,
+    nrow = nrow(original),
+    byrow = TRUE,
+    dimnames = dimnames(original)
+  )
+  
+  se <- matrix(
+    ame_se,
+    nrow = nrow(original),
+    byrow = TRUE,
+    dimnames = dimnames(original)
+  )
+  
+  p <- 2 * pnorm(-abs(est / se))
+  
+  list(
+    estimate = est,
+    se = se,
+    p = p
+  )
+}
 
-### Volunteer ----
+# Format marginal effects as flextable
+format_ame_table <- function(models, filename = NULL) {
+  
+  stars <- function(p) {
+    ifelse(p < 0.01, "***",
+           ifelse(p < 0.05, "**",
+                  ifelse(p < 0.10, "*", "")))
+  }
+  
+  results <- do.call(rbind, lapply(names(models), function(model_name) {
+    
+    x <- ame_inference(models[[model_name]])
+    
+    data.frame(
+      Model = model_name,
+      Comparison = rownames(x$estimate),
+      
+      Ey_est = x$estimate[, "Ey"],
+      Ey_se = x$se[, "Ey"],
+      Ey_p = x$p[, "Ey"],
+      
+      Pr_est = x$estimate[, "Pr"] * 100,
+      Pr_se = x$se[, "Pr"] * 100,
+      Pr_p = x$p[, "Pr"],
+      
+      Eypos_est = x$estimate[, "Eypos"],
+      Eypos_se = x$se[, "Eypos"],
+      Eypos_p = x$p[, "Eypos"],
+      
+      row.names = NULL
+    )
+  }))
+  
+  results$Comparison <- c(
+    pooled = "Pooled",
+    gap_2005 = "2005",
+    gap_2011 = "2011",
+    did = "Change (2011 - 2005)"
+  )[results$Comparison]
+  
+  ft <- flextable(results) |>
+    set_header_labels(
+      Model = "Specification",
+      Comparison = "Comparison",
+      Ey_est = "Expected Minutes",
+      Pr_est = "Participation (pp)",
+      Eypos_est = "Minutes if Participating"
+    )
+  
+  # Estimates and standard errors in the same cell
+  ft <- compose(
+    ft, j = "Ey_est",
+    value = as_paragraph(
+      as_chunk(sprintf("%.2f%s", results$Ey_est,
+                       stars(results$Ey_p))),
+      as_chunk(sprintf("\n(%.2f)", results$Ey_se))
+    )
+  )
+  
+  ft <- compose(
+    ft, j = "Pr_est",
+    value = as_paragraph(
+      as_chunk(sprintf("%.2f%s", results$Pr_est,
+                       stars(results$Pr_p))),
+      as_chunk(sprintf("\n(%.2f)", results$Pr_se))
+    )
+  )
+  
+  ft <- compose(
+    ft, j = "Eypos_est",
+    value = as_paragraph(
+      as_chunk(sprintf("%.2f%s", results$Eypos_est,
+                       stars(results$Eypos_p))),
+      as_chunk(sprintf("\n(%.2f)", results$Eypos_se))
+    )
+  )
+  
+  # Remove intermediate calculation columns
+  ft <- delete_columns(
+    ft,
+    j = c(
+      "Ey_se", "Ey_p",
+      "Pr_se", "Pr_p",
+      "Eypos_se", "Eypos_p"
+    )
+  )
+  
+  ft <- ft |>
+    theme_booktabs() |>
+    bold(part = "header") |>
+    align(align = "center", part = "all") |>
+    align(j = c("Model", "Comparison"),
+          align = "left", part = "all") |>
+    merge_v(j = "Model") |>
+    valign(valign = "center", part = "all") |>
+    autofit() |>
+    set_table_properties(layout = "autofit", width = 1) |>
+    fontsize(size = 9, part = "all") |>
+    add_footer_lines(
+      values = paste(
+        "Standard errors in parentheses. * p < 0.10;",
+        "** p < 0.05; *** p < 0.01.",
+        "Expected Minutes = change in unconditional expected minutes;",
+        "Participation (pp) = change in probability of positive activity,",
+        "in percentage points; Minutes if Participating = change in",
+        "expected minutes conditional on positive activity."
+      )
+    )
+  
+  if (!is.null(filename)) {
+    save_as_docx(ft, path = filename)
+  }
+  
+  return(ft)
+}
+
+### Run models ----
 mdl_volunteer <- run_models("volunteer_mins")
-### Civic ----
-mdl_civic <- run_models("civic_mins")
-### Sports ----
-mdl_sports <- run_models("sports_mins")
-### Socializing ----
-mdl_social <- run_models("social_mins")
+mdl_civic     <- run_models("civic_mins")
+mdl_sports    <- run_models("sports_mins")
+mdl_social    <- run_models("social_mins")
+
+### Marginal effects tables ----
+ft_ame_volunteer <- format_ame_table(
+  mdl_volunteer[c("Baseline", "Full Model")], "ame1-volunteer.docx"
+)
+
+ft_ame_civic <- format_ame_table(
+  mdl_civic[c("Baseline", "Full Model")], "ame2-civic.docx"
+)
+# i don't plan to use these two. But they're here if I want them.
+ft_ame_sports <- format_ame_table(
+  mdl_sports[c("Baseline", "Full Model")], "ame3-sports.docx"
+)
+
+ft_ame_social <- format_ame_table(
+  mdl_social[c("Baseline", "Full Model")], "ame4-social.docx"
+)
 
 # tables ----
 # May need to change these since they're tobit now.
@@ -131,6 +355,7 @@ format_reg_table <- function(models, filename,
   ft <- ft |>
     theme_booktabs() |>
     autofit() |>
+    set_table_properties(layout = "autofit", width = 1)|>
     fontsize(size = 9, part = "all") |>
     align(align = "center", part = "all")
   
