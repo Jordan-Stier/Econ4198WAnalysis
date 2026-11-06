@@ -14,14 +14,6 @@ library(modelsummary)
 
 housing_data <-readRDS("data_0511_clean.rds")
 
-# Done due to skew in the data
-# Doing these separately to remember what my target vars are
-housing_data$volunteer_particip <- as.integer(housing_data$volunteer_mins >0)
-housing_data$civic_particip <- as.integer(housing_data$civic_mins >0)
-# These 2 are placebos
-housing_data$sports_particip <- as.integer(housing_data$sports_mins >0)
-housing_data$social_particip <- as.integer(housing_data$social_mins >0)
-
 # Dif ids by year
 housing_data <- housing_data %>%
   mutate(strat_yr = interaction(year_cat, GEPSEUST, drop = TRUE),
@@ -29,19 +21,18 @@ housing_data <- housing_data %>%
 
 # need to use this, i was getting insane results cause I wasn't.
 # haven't decided if I'll use svyglm yet
-# svdes <- svydesign(
-#   ids = ~clust_yr, strata = ~strat_yr,
-#   weights = ~TUFINLWGT, nest = TRUE, data = housing_data
-# )
+svdes <- svydesign(
+  ids = ~clust_yr, strata = ~strat_yr,
+  weights = ~TUFINLWGT, nest = TRUE, data = housing_data
+)
+# Done to account for a few PSUs with 1 obs
+options(survey.lonely.psu = "adjust")
 
-# Lazy models ----
-## Probit/Intensity given participation ----
-
+# Models ----
 # Regressions
 # Using a suite to suggest original was unbiased
 
-# Runs a suite of models on participation, with more
-# controls in each.
+## Runs a suite of tobit models, with more controls in each.----
 run_models <- function(
     outcome, data = housing_data, subset = NULL, survey_design = svdes) {
   
@@ -80,7 +71,18 @@ run_models <- function(
   })
 }
 # Avg marginal effects. Currently only for homeowner:year interaction.
-ame_inference <- function(m) {
+# Avg marginal effects. Currently only for homeowner:year interaction.
+ame_inference <- function(m, ame_fun = effects_ame) {
+  
+  # Coerce AME output to a matrix; a plain named vector becomes a "Pr" column
+  ame_mat <- function(model) {
+    r <- ame_fun(model)
+    if (is.null(dim(r))) {
+      r <- matrix(as.numeric(r), ncol = 1,
+                  dimnames = list(names(r), "Pr"))
+    }
+    as.matrix(r)
+  }
   
   V <- vcov(m)
   b <- coef(m)
@@ -116,7 +118,7 @@ ame_inference <- function(m) {
       mm$scale <- exp(p[scale_name])
     }
     
-    as.vector(t(effects_ame(mm)))
+    as.vector(t(ame_mat(mm)))
   }
   
   estimates <- calculate(pars)
@@ -148,7 +150,7 @@ ame_inference <- function(m) {
   ame_se <- sqrt(pmax(diag(ame_var), 0))
   
   # Organize results
-  original <- effects_ame(m)
+  original <- ame_mat(m)
   
   est <- matrix(
     estimates,
@@ -173,8 +175,14 @@ ame_inference <- function(m) {
   )
 }
 
-# Format marginal effects as flextable
-format_ame_table <- function(models, filename = NULL) {
+## Format marginal effects as flextable
+format_ame_table <- function(
+    models,
+    filename = NULL,
+    ame_fun  = effects_ame,
+    measures = c("Ey", "Pr", "Eypos"),
+    pr_scale = 100
+) {
   
   stars <- function(p) {
     ifelse(p < 0.01, "***",
@@ -182,82 +190,71 @@ format_ame_table <- function(models, filename = NULL) {
                   ifelse(p < 0.10, "*", "")))
   }
   
+  labels <- c(
+    Ey    = "Expected Minutes",
+    Pr    = "Participation (pp)",
+    Eypos = "Minutes if Participating"
+  )
+  
+  definitions <- c(
+    Ey    = "Expected Minutes = change in unconditional expected minutes",
+    Pr    = paste("Participation (pp) = change in probability of positive",
+                  "activity, in percentage points"),
+    Eypos = paste("Minutes if Participating = change in expected minutes",
+                  "conditional on positive activity")
+  )
+  
   results <- do.call(rbind, lapply(names(models), function(model_name) {
     
-    x <- ame_inference(models[[model_name]])
+    x <- ame_inference(models[[model_name]], ame_fun = ame_fun)
     
-    data.frame(
+    out <- data.frame(
       Model = model_name,
       Comparison = rownames(x$estimate),
-      
-      Ey_est = x$estimate[, "Ey"],
-      Ey_se = x$se[, "Ey"],
-      Ey_p = x$p[, "Ey"],
-      
-      Pr_est = x$estimate[, "Pr"] * 100,
-      Pr_se = x$se[, "Pr"] * 100,
-      Pr_p = x$p[, "Pr"],
-      
-      Eypos_est = x$estimate[, "Eypos"],
-      Eypos_se = x$se[, "Eypos"],
-      Eypos_p = x$p[, "Eypos"],
-      
       row.names = NULL
     )
+    
+    for (m in measures) {
+      k <- if (m == "Pr") pr_scale else 1   # proportion -> percentage points
+      out[[paste0(m, "_est")]] <- x$estimate[, m] * k
+      out[[paste0(m, "_se")]]  <- x$se[, m] * k
+      out[[paste0(m, "_p")]]   <- x$p[, m]
+    }
+    
+    out
   }))
   
   results$Comparison <- c(
-    pooled = "Pooled",
+    pooled   = "Pooled",
     gap_2005 = "2005",
     gap_2011 = "2011",
-    did = "Change (2011 - 2005)"
-  )[results$Comparison]
+    did      = "Change (2011 - 2005)"
+  )[tolower(results$Comparison)]
   
   ft <- flextable(results) |>
     set_header_labels(
-      Model = "Specification",
-      Comparison = "Comparison",
-      Ey_est = "Expected Minutes",
-      Pr_est = "Participation (pp)",
-      Eypos_est = "Minutes if Participating"
+      values = c(
+        list(Model = "Specification", Comparison = "Comparison"),
+        setNames(as.list(labels[measures]), paste0(measures, "_est"))
+      )
     )
   
   # Estimates and standard errors in the same cell
-  ft <- compose(
-    ft, j = "Ey_est",
-    value = as_paragraph(
-      as_chunk(sprintf("%.2f%s", results$Ey_est,
-                       stars(results$Ey_p))),
-      as_chunk(sprintf("\n(%.2f)", results$Ey_se))
+  for (m in measures) {
+    est_txt <- sprintf("%.2f%s", results[[paste0(m, "_est")]],
+                       stars(results[[paste0(m, "_p")]]))
+    se_txt  <- sprintf("\n(%.2f)", results[[paste0(m, "_se")]])
+    
+    ft <- compose(
+      ft, j = paste0(m, "_est"),
+      value = as_paragraph(as_chunk(est_txt), as_chunk(se_txt))
     )
-  )
-  
-  ft <- compose(
-    ft, j = "Pr_est",
-    value = as_paragraph(
-      as_chunk(sprintf("%.2f%s", results$Pr_est,
-                       stars(results$Pr_p))),
-      as_chunk(sprintf("\n(%.2f)", results$Pr_se))
-    )
-  )
-  
-  ft <- compose(
-    ft, j = "Eypos_est",
-    value = as_paragraph(
-      as_chunk(sprintf("%.2f%s", results$Eypos_est,
-                       stars(results$Eypos_p))),
-      as_chunk(sprintf("\n(%.2f)", results$Eypos_se))
-    )
-  )
+  }
   
   # Remove intermediate calculation columns
   ft <- delete_columns(
     ft,
-    j = c(
-      "Ey_se", "Ey_p",
-      "Pr_se", "Pr_p",
-      "Eypos_se", "Eypos_p"
-    )
+    j = c(paste0(measures, "_se"), paste0(measures, "_p"))
   )
   
   ft <- ft |>
@@ -272,13 +269,10 @@ format_ame_table <- function(models, filename = NULL) {
     set_table_properties(layout = "autofit", width = 1) |>
     fontsize(size = 9, part = "all") |>
     add_footer_lines(
-      values = paste(
-        "Standard errors in parentheses. * p < 0.10;",
-        "** p < 0.05; *** p < 0.01.",
-        "Expected Minutes = change in unconditional expected minutes;",
-        "Participation (pp) = change in probability of positive activity,",
-        "in percentage points; Minutes if Participating = change in",
-        "expected minutes conditional on positive activity."
+      values = paste0(
+        "Standard errors in parentheses. * p < 0.10; ",
+        "** p < 0.05; *** p < 0.01. ",
+        paste(definitions[measures], collapse = "; "), "."
       )
     )
   
@@ -286,7 +280,58 @@ format_ame_table <- function(models, filename = NULL) {
     save_as_docx(ft, path = filename)
   }
   
-  return(ft)
+  invisible(ft)
+}
+
+## Probit/Intensity given participation ----
+# Had Claude write this.
+run_alt_models <- function(
+    outcome, subset = NULL, intensity = FALSE, survey_design = svdes) {
+  
+  des <- survey_design
+  
+  # Subset the design itself (not the data) so the variance estimator
+  # keeps the full strata/cluster structure
+  subset_expr <- enquo(subset)
+  if (!rlang::quo_is_null(subset_expr)) {
+    keep <- rlang::eval_tidy(subset_expr, data = des$variables)
+    des  <- des[which(keep), ]
+  }
+  
+  if (intensity) {
+    y   <- des$variables[[outcome]]
+    des <- des[which(!is.na(y) & y > 0), ]
+    lhs    <- outcome
+    family <- gaussian()
+  } else {
+    lhs    <- paste0("I(", outcome, " > 0)")
+    family <- quasibinomial(link = "probit")  # same estimates as probit,
+    # no non-integer-weight warnings
+  }
+  
+  # Drop factor levels emptied by subsetting (avoids NA coefficients)
+  des$variables <- droplevels(des$variables)
+  
+  # Model pieces (same as run_models)
+  base  <- "homeowner_cat*year_cat"
+  demog <- "age + sex_cat + race_cat + relig_cat"
+  socio <- "education_cat + income_cat + employed_cat"
+  hh    <- "married_cat + children"
+  
+  rhs <- c(
+    "Baseline"               = base,
+    "Demographic Controls"   = paste(base, demog, sep = " + "),
+    "Socioeconomic Controls" = paste(base, demog, socio, sep = " + "),
+    "Full Model"             = paste(base, demog, socio, hh, sep = " + ")
+  )
+  
+  lapply(rhs, function(r) {
+    survey::svyglm(
+      as.formula(paste(lhs, "~", r)),
+      design = des,
+      family = family
+    )
+  })
 }
 
 ### Run models ----
@@ -294,6 +339,10 @@ mdl_volunteer <- run_models("volunteer_mins")
 mdl_civic     <- run_models("civic_mins")
 mdl_sports    <- run_models("sports_mins")
 mdl_social    <- run_models("social_mins")
+
+#### Robustness check models ----
+mdl_vol_particip <- run_alt_models("volunteer_mins")
+mdl_vol_intens <- run_alt_models("volunteer_mins", intensity = TRUE)
 
 ### Marginal effects tables ----
 ft_ame_volunteer <- format_ame_table(
@@ -336,12 +385,16 @@ attr(control_rows, "position")<-"coef_end"
 format_reg_table <- function(models, filename,
                              coef_mapping,
                              rows_controls,
-                             model_names = c(
-                               "Baseline",
-                               "Demographic Controls",
-                               "Socioeconomic Controls",
-                               "Full Model"
-                             )) {
+                             model_names = names(models)) {
+  
+  spec_names <- c("Baseline", "Demographic Controls",
+                  "Socioeconomic Controls", "Full Model")
+  idx <- match(names(models), spec_names)
+  
+  pos <- attr(rows_controls, "position")
+  rows_controls <- rows_controls[, c(1, idx + 1), drop = FALSE]
+  names(rows_controls)[-1] <- as.character(seq_along(idx))
+  attr(rows_controls, "position") <- pos
   
   ft <- modelsummary(
     models,
@@ -349,6 +402,7 @@ format_reg_table <- function(models, filename,
     model_names = model_names,
     stars = TRUE,
     add_rows = rows_controls,
+    gof_omit = "AIC|BIC|Log.Lik",
     output = "flextable"
   )
   
@@ -380,3 +434,66 @@ ft_list <- lapply(names(model_tables), function(filename) {
 })
 
 names(ft_list) <- names(model_tables)
+
+# formatting alt tables. claude. Add participation/intensity label manually
+format_alt_table <- function(particip, intens, filename = NULL,
+                             coef_mapping = coef_names) {
+  
+  # Trailing spaces keep the names unique, since modelsummary needs
+  # unique names. They display identically.
+  models <- list(
+    "Baseline"    = particip[["Baseline"]],
+    "Full Model"  = particip[["Full Model"]],
+    "Baseline "   = intens[["Baseline"]],
+    "Full Model " = intens[["Full Model"]]
+  )
+  
+  # Control rows: term + one column per model
+  rows_controls <- data.frame(
+    term = c("Demographic Controls", "Socioeconomic Controls",
+             "Household Controls"),
+    a = c("", "", ""),
+    b = c("Yes", "Yes", "Yes"),
+    c = c("", "", ""),
+    d = c("Yes", "Yes", "Yes")
+  )
+  names(rows_controls)[2:5] <- names(models)
+  attr(rows_controls, "position") <- "coef_end"
+  
+  ft <- modelsummary(
+    models,
+    coef_map = coef_mapping,
+    stars = TRUE,
+    add_rows = rows_controls,
+    gof_omit = "AIC|BIC|Log.Lik",
+    output = "flextable"
+  ) |>
+    add_footer_lines(
+      paste(
+        "Design-based robust standard errors in parentheses.",
+        "Participation (columns 1-2): probit for Pr(minutes > 0).",
+        "Intensity (columns 3-4): linear model of minutes among participants."
+      )
+    ) |>
+    theme_booktabs() |>
+    autofit() |>
+    set_table_properties(layout = "autofit", width = 1) |>
+    fontsize(size = 9, part = "all") |>
+    align(align = "center", part = "all")
+  
+  if (!is.null(filename)) save_as_docx(ft, path = filename)
+  
+  ft
+}
+# files for alt model tables ----
+ft_vol_alt <- format_alt_table(
+  mdl_vol_particip, mdl_vol_intens, "reg5-vol_alt_table.docx"
+)
+# Probit AME
+ft_ame_probit <- format_ame_table(
+  mdl_vol_particip[c("Baseline", "Full Model")],
+  filename = "ame5_vol_probit.docx",
+  ame_fun  = effects_ame_probit,
+  measures = "Pr",
+  pr_scale = 1
+)
