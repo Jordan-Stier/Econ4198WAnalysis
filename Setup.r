@@ -391,6 +391,11 @@ data_0511 <- data_0511 %>%
     metro_cat = factor(GTMETSTA),
     
     relig_cat = as.integer(relig_mins >0),
+    relig_cat = factor(
+      if_else(relig_cat %in% 0:1, relig_cat, NA_real_),
+      levels = c(0, 1),
+      labels = c("Not Religious", "Religious")
+    ),
     # YEAR AND POST-PERIOD INDICATORS.
     # Both are used in case I add more years for parallel-trends
     year_cat = factor(year),

@@ -63,6 +63,7 @@ save_as_docx(ft, path = "summary_statistics.docx")
 
 categorical_vars <- c(
   "homeowner_cat", "education_cat", "race_cat", "sex_cat",
+  "relig_cat",
   "married_cat", "citizen_cat", "income_cat",
   "employed_cat", "workhours_cat", "year_cat"
 )
@@ -72,6 +73,7 @@ var_labels <- c(
   education_cat = "Education",
   race_cat = "Race",
   sex_cat = "Sex",
+  relig_cat = "Religious",
   married_cat = "Marital Status",
   citizen_cat = "Citizenship",
   income_cat = "Household Income",
@@ -97,14 +99,15 @@ for (v in categorical_vars) {
     )
   }
   
-  counts <- table(x, useNA = "no")
+  counts <- table(x, useNA = "ifany")
   counts <- counts[counts > 0]
   
-  total_n <- sum(!is.na(x))
+  total_n <- nrow(housing_data)
   
   temp <- data.frame(
     Variable = rep(unname(var_labels[v]), length(counts)),
-    Type = names(counts),
+    Type = ifelse(is.na(names(counts)) | names(counts) == "<NA>",
+                  "Missing", names(counts)),
     N = as.integer(counts),
     Percent = round(100 * as.integer(counts) / total_n, 1)
   )
@@ -122,12 +125,53 @@ categorical_table <- rbind(
   )
 )
 
-write.table(
-  categorical_table,
-  "categorical_statistics.tsv",
-  sep = "\t",
-  row.names = FALSE,
-  quote = FALSE
+format_categorical_table <- function(data) {
+  
+  data <- data %>%
+    mutate(
+      Variable = ifelse(duplicated(Variable), "", Variable),
+      N = format(N, big.mark = ",", scientific = FALSE),
+      Percent = sprintf("%.1f%%", Percent)
+    )
+  
+  flextable(data) |>
+    set_header_labels(
+      Variable = "Variable",
+      Type = "Category",
+      N = "N",
+      Percent = "Percent"
+    ) |>
+    theme_booktabs() |>
+    bold(part = "header") |>
+    align(align = "left", j = c("Variable", "Type")) |>
+    align(align = "center", j = c("N", "Percent")) |>
+    autofit() |>
+    set_table_properties(layout = "autofit", width = 1)
+}
+
+# 1. Full appendix table
+ft_categorical_all <- format_categorical_table(
+  categorical_table
+)
+
+save_as_docx(
+  ft_categorical_all,
+  path = "categorical_full.docx"
+)
+
+# 2. Selected data section table
+selected_vars <- c("Homeownership", "Survey Period", "Total Observations")
+
+selected_table <- categorical_table %>%
+  filter(Variable %in% selected_vars)
+
+ft_categorical_selected <- format_categorical_table(
+  selected_table
+)
+
+save_as_docx(
+  ft_categorical_selected,
+  path = "categorical_select.docx"
 )
 
 # Plotting ----
