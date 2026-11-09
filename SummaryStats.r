@@ -95,7 +95,7 @@ for (v in categorical_vars) {
   if (v == "race_cat") {
     x <- factor(
       x,
-      levels = c("White", "Black", "Multiracial", "Other single race")
+      levels = c("White", "Black", "Other / Multiracial")
     )
   }
   
