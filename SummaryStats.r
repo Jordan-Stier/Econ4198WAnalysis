@@ -169,6 +169,13 @@ ft_categorical_selected <- format_categorical_table(
   selected_table
 )
 
+ft_categorical_selected <- ft_categorical_selected |>
+  add_footer_lines(
+    values = "Note: The complete set of categorical-variable summary statistics is reported in Appendix C, Table C1."
+  ) |>
+  italic(part = "footer") |>
+  fontsize(size = 9, part = "footer")
+
 save_as_docx(
   ft_categorical_selected,
   path = "categorical_select.docx"

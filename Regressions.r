@@ -66,10 +66,95 @@ run_models <- function(
       data = data,
       weights = TUFINLWGT,
       dist = "gaussian",
-      robust = TRUE
+      robust = TRUE,
+      model = TRUE,
+      cluster = clust_yr
     )
   })
 }
+# I accidentally deleted this at some point so claude rewrote
+## Average marginal effects of homeownership ----
+# Estimation sample and sampling weights from a fitted model
+.ame_frame <- function(m) {
+  mf <- m$model
+  if (is.null(mf)) mf <- stats::model.frame(m)
+  mf <- as.data.frame(mf)
+  attr(mf, "terms") <- NULL
+  w <- mf[["(weights)"]]
+  if (is.null(w)) w <- m$prior.weights
+  if (is.null(w)) w <- rep(1, nrow(mf))
+  list(mf = mf, w = as.numeric(w))
+}
+
+.set_factor <- function(d, var, level) {
+  d[[var]] <- factor(rep(level, nrow(d)), levels = levels(d[[var]]))
+  d
+}
+
+# pred_fun(d) returns an n x k matrix of predicted outcomes for data d.
+# Returns pooled, 2005, 2011 homeowner-renter gaps and their difference.
+.ame_table <- function(pred_fun, mf, w, year_sample = c("own", "all")) {
+  year_sample <- match.arg(year_sample)
+  hh <- levels(mf$homeowner_cat)   # c("Renter", "Homeowner")
+  yy <- levels(mf$year_cat)        # c("2005", "2011")
+  
+  gap <- function(d, wt) {
+    M <- pred_fun(.set_factor(d, "homeowner_cat", hh[2])) -
+      pred_fun(.set_factor(d, "homeowner_cat", hh[1]))
+    colSums(M * wt) / sum(wt)
+  }
+  year_gap <- function(y) {
+    if (year_sample == "own") {      # average over that year's respondents
+      i <- mf$year_cat == y
+      gap(mf[i, , drop = FALSE], w[i])
+    } else {                         # set year for everyone
+      gap(.set_factor(mf, "year_cat", y), w)
+    }
+  }
+  
+  out <- rbind(pooled   = gap(mf, w),
+               gap_2005 = year_gap(yy[1]),
+               gap_2011 = year_gap(yy[2]))
+  rbind(out, did = out["gap_2011", ] - out["gap_2005", ])
+}
+
+# Tobit (survreg, left-censored at 0): Ey, Pr(y>0), E[y | y>0]
+effects_ame <- function(m, year_sample = "own", weighted = TRUE) {
+  fr <- .ame_frame(m)
+  w  <- if (weighted) fr$w else rep(1, nrow(fr$mf))
+  b  <- m$coefficients; b[is.na(b)] <- 0
+  sigma <- m$scale
+  Terms <- delete.response(terms(m))
+  
+  pred <- function(d) {
+    X  <- model.matrix(Terms, d, xlev = m$xlevels,
+                       contrasts.arg = m$contrasts)
+    mu <- drop(X[, names(b), drop = FALSE] %*% b)
+    z  <- mu / sigma
+    Pr <- pnorm(z)
+    lam <- exp(dnorm(z, log = TRUE) - pnorm(z, log.p = TRUE))  # inverse Mills
+    cbind(Ey    = Pr * mu + sigma * dnorm(z),
+          Pr    = Pr,
+          Eypos = mu + sigma * lam)
+  }
+  .ame_table(pred, fr$mf, w, year_sample)
+}
+
+# Probit (svyglm quasibinomial, probit link): Pr in percentage points
+effects_ame_probit <- function(m, year_sample = "own", weighted = TRUE) {
+  fr <- .ame_frame(m)
+  w  <- if (weighted) fr$w else rep(1, nrow(fr$mf))
+  b  <- m$coefficients; b[is.na(b)] <- 0
+  Terms <- delete.response(terms(m))
+  
+  pred <- function(d) {
+    X <- model.matrix(Terms, d, xlev = m$xlevels,
+                      contrasts.arg = m$contrasts)
+    cbind(Pr = 100 * pnorm(drop(X[, names(b), drop = FALSE] %*% b)))
+  }
+  .ame_table(pred, fr$mf, w, year_sample)
+}
+
 # Avg marginal effects. Currently only for homeowner:year interaction.
 # Avg marginal effects. Currently only for homeowner:year interaction.
 ame_inference <- function(m, ame_fun = effects_ame) {
