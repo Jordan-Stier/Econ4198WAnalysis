@@ -8,7 +8,7 @@ library(marginaleffects)
 library(survey)
 library(knitr)
 library(flextable)
-housing_data <-readRDS("data_0511_clean.rds")
+housing_data <-readRDS("data_0413_clean.rds")
 
 # Tables ----
 summary_vars <- c(
@@ -41,12 +41,14 @@ summary_table$Variable <- c(
   "Age",
   "Number of Children"
 )
-summary_table[] <- lapply(summary_table, function(x) {
-  if (is.numeric(x)) sprintf("%.2f", x) else x
-})
+summary_table <- summary_table %>%
+  mutate(
+    N = format(N, big.mark = ",", scientific = FALSE),
+    Nonzero_N = format(Nonzero_N, big.mark = ",", scientific = FALSE),
+    across(c(Mean, SD, Minimum, Median, Maximum, Median_Positive),
+           ~ sprintf("%.2f", .x))
+  )
 ft <- flextable(summary_table) |>
-  autofit() |>
-  set_table_properties(layout = "autofit", width = 1)|>
   set_header_labels(
     Variable = "Activity / Characteristic",
     N = "N",
@@ -57,7 +59,15 @@ ft <- flextable(summary_table) |>
     Maximum = "Maximum",
     Nonzero_N = "Nonzero Observations",
     Median_Positive = "Median (Positive Values)"
-  )
+  ) |>
+  theme_booktabs() |>
+  bold(part = "header") |>
+  font(fontname = "Times New Roman", part = "all") |>
+  fontsize(size = 10, part = "all") |>
+  align(align = "left", j = "Variable", part = "all") |>
+  align(align = "center", j = setdiff(names(summary_table), "Variable"), part = "all") |>
+  autofit() |>
+  set_table_properties(layout = "autofit", width = 1)
 # Note: Make Landscape
 save_as_docx(ft, path = "summary_statistics.docx")
 
@@ -143,8 +153,10 @@ format_categorical_table <- function(data) {
     ) |>
     theme_booktabs() |>
     bold(part = "header") |>
-    align(align = "left", j = c("Variable", "Type")) |>
-    align(align = "center", j = c("N", "Percent")) |>
+    font(fontname = "Times New Roman", part = "all") |>
+    fontsize(size = 10, part = "all") |>
+    align(align = "left", j = c("Variable", "Type"), part = "all") |>
+    align(align = "center", j = c("N", "Percent"), part = "all") |>
     autofit() |>
     set_table_properties(layout = "autofit", width = 1)
 }
@@ -173,6 +185,7 @@ ft_categorical_selected <- ft_categorical_selected |>
   add_footer_lines(
     values = "Note: The complete set of categorical-variable summary statistics is reported in Appendix C, Table C1."
   ) |>
+  font(fontname = "Times New Roman", part = "footer") |>
   italic(part = "footer") |>
   fontsize(size = 9, part = "footer")
 
@@ -188,24 +201,30 @@ p <- ggplot(
       Homeownership = homeowner_cat,
       Year = year_cat
     ),
-  aes(x = Homeownership, y = volunteer_mins, color = Year)
+  aes(x = Year, y = volunteer_mins, fill = Homeownership, weight = wt_pooled)
 ) +
-  geom_jitter(
-    width = 0.15,
-    height = 0,
-    alpha = 0.15,
-    size = 1
+  stat_summary(
+    fun = mean,
+    geom = "bar",
+    position = position_dodge(width = 0.9),
+    color = "black",
+    linewidth = 0.3
   ) +
-  scale_y_continuous(trans = "log1p") +
+  scale_fill_grey(
+    start = 0.85,
+    end = 0.35
+  ) +
   labs(
     title = "Homeownership and Volunteering by Survey Year",
-    x = "Homeownership Status",
-    y = "log(1+Volunteer Minutes)",
-    color = "Survey Year"
+    x = "Survey Year",
+    y = "Weighted Mean Volunteer Minutes",
+    fill = "Homeownership Status"
   ) +
-  theme_minimal(base_size = 12)
-
-print(p)
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
 
 ggsave(
   "homeownership_volunteering.png",

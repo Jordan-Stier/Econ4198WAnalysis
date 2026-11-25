@@ -1,19 +1,13 @@
-install.packages("haven")
-install.packages("readxl")
-install.packages("dplyr")
-install.packages("tidyr")
-install.packages("ggplot2")
-install.packages("lmtest")
-install.packages("marginaleffects")
-install.packages("survey")
-install.packages("modelsummary")
-install.packages("knitr")
-install.packages("modelsummary")
-install.packages("pandoc")
-install.packages("AER")
-install.packages("censReg")
-
 # Written By Jordan Stier with (a lot of) assistance from chatgpt & claude.
+# ATUS multiyear (2004-2019) data prep
+
+# Packages ----
+# Note: I plan to remove unnescessary ones. At some point.
+pkgs <- c("data.table", "haven", "readxl", "dplyr", "tidyr", "ggplot2",
+          "lmtest", "marginaleffects", "survey", "pandoc","modelsummary", "knitr",
+          "AER", "censReg", "tibble", "flextable", "rlang")
+missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
+if (length(missing_pkgs)) install.packages(missing_pkgs)
 
 library(haven)
 library(readxl)
@@ -25,214 +19,145 @@ library(marginaleffects)
 library(survey)
 library(tibble)
 
-# ATUS 2011----
-# Reading in tables
-cps_11<-read.table("../Dataset/atuscps_2011/atuscps_2011.dat",
-                header=TRUE, sep=',')
-respondent_11<-read.table("../Dataset/atusresp_2011/atusresp_2011.dat",
-                       header = TRUE, sep = ',')
-activity_11<-read.table("../Dataset/atussum_2011/atussum_2011.dat",
-                     header = TRUE, sep = ',')
+# Paths: ADJUST to match your folder/file names ----
+# Takes 0325, but due to some things like covid (+higher incomes capped lower
+# in 2003), only 0413 is used 
+data_dir  <- "../Dataset"
+cps_path  <- file.path(data_dir, "atuscps_0325.dat")
+resp_path <- file.path(data_dir, "atusresp_0325.dat")
+sum_path  <- file.path(data_dir, "atussum_0325.dat")
 
-# Trimming.
-cps_11_trimmed<-cps_11%>%select(
-  TUCASEID,      # ATUS case/respondent ID
-  TULINENO,      # Household member line number
-  
-  HEFAMINC,      # Family/household income
-  HETENURE,      # Housing tenure: owned, rented, etc.
-  
-  PESEX,         # Sex
-  PRTAGE,        # Age
-  PEEDUCA,       # Educational attainment
-  PEMARITL,      # Marital status
-  PRCITSHP,      # Citizenship status
-  PTDTRACE,      # Race
-  PEHRUSLT,      # Usual hours worked per week
-  
-  GEPSEUST,      # Pseudo collapsed sampling stratum
-  GEPSEUCL,      # Pseudo PSU/cluster
-  GESTFIPS,       # State
-  GTMETSTA       # Metropolitan area status
-  ) %>% rename(
-    sex=PESEX, homeowner=HETENURE, income=HEFAMINC,
-    education=PEEDUCA, married=PEMARITL,
-    citizen=PRCITSHP, race=PTDTRACE,
-    age=PRTAGE, workhours=PEHRUSLT
-  )
+# Reader ----
+# The multiyear files are big, so only the needed columns are read.
+# Header case differs between files (e.g. atussum uses lowercase 'tucaseid'
+# and t-codes), so matching is case-insensitive and all names are uppercased.
+# TUCASEID is a 14-digit ID, so it is read as character (safe for joins).
+read_atus <- function(path, keep = character(), keep_regex = NULL) {
+  hdr <- names(data.table::fread(path, nrows = 0))
+  hit <- toupper(hdr) %in% toupper(keep)
+  if (!is.null(keep_regex)) hit <- hit | grepl(keep_regex, hdr, ignore.case = TRUE)
+  dt <- data.table::fread(path, select = hdr[hit], integer64 = "character",
+                          data.table = FALSE)
+  names(dt) <- toupper(names(dt))
+  dt
+}
 
-respondent_11_trimmed<-respondent_11%>%select(
-  TUCASEID,      # ATUS case ID
-  TULINENO,      # Household member line number
-  TUFINLWGT,     # ATUS final survey weight
-  
-  TESCHENR,      # School enrollment status
-  TELFS,         # Labor force status
-  
-  TRDPFTPT,      # Full-time/part-time work status
-  TRSPPRES,      # Spouse/partner present
-  TRCHILDNUM,    # Number of children
-  TRTALONE       # Time spent alone (minutes)
-  ) %>% rename(
-    inschool=TESCHENR,
-    employed=TELFS, fulltime=TRDPFTPT,
-    spouse_pres=TRSPPRES, children=TRCHILDNUM,
-    timealone=TRTALONE
-  )
+# CPS file ----
+cps <- read_atus(cps_path, keep = c(
+  "TUCASEID", "TULINENO",
+  "HEFAMINC", "HUFAMINC",   # family income; name differs across years
+  "HETENURE",
+  "PESEX", "PRTAGE", "PEEDUCA", "PEMARITL", "PRCITSHP", "PTDTRACE", "PEHRUSLT",
+  "GEPSEUST", "GEPSEUCL", "GESTFIPS", "GTMETSTA"
+))
 
-activity_11_trimmed<-activity_11%>%mutate(
-    volunteer_mins = rowSums(
-      across(starts_with("t15")),
-      na.rm = TRUE
-    ),
-    social_mins = rowSums(
-      across(c(starts_with("t1202"),starts_with("t1201"))),
-      na.rm = TRUE
-    ),
-    sports_mins = rowSums(
-      across(starts_with("t1301")),
-      na.rm = TRUE
-    ),
-    civic_mins = rowSums(
-      across(c(t100201, t100305)),
-      na.rm = TRUE
-    ),
-    # This is for controls
-    relig_mins = rowSums(
-      across(starts_with("t14")),
-      na.rm = TRUE
-    )
-  )%>%select(
-  tucaseid,     # ATUS case ID
-  volunteer_mins, # Volunteering
-  social_mins, # Socializing
-  sports_mins,   # Play sports
-  civic_mins, # Civic obligations/participation
-  relig_mins
-  ) %>% rename(
-    TUCASEID=tucaseid
-  )
+need_cps <- c("TUCASEID", "TULINENO", "HETENURE", "PESEX", "PRTAGE", "PEEDUCA",
+              "PEMARITL", "PRCITSHP", "PTDTRACE", "PEHRUSLT", "GESTFIPS",
+              "GTMETSTA")
+stopifnot(all(need_cps %in% names(cps)))
 
-data_11 <- activity_11_trimmed %>%
-  left_join(respondent_11_trimmed, by="TUCASEID") %>%
-  left_join(cps_11_trimmed, by=c("TUCASEID","TULINENO"))%>% 
-  relocate(TUCASEID, TULINENO, TUFINLWGT, homeowner, volunteer_mins)%>%
-  mutate(owner = ifelse(homeowner == 1, 1, 0), year=2011)
+# Income: use whichever of HEFAMINC / HUFAMINC exists, turning negative
+# (missing) codes into NA first so coalesce can fall through to the other one.
+inc_cols <- intersect(c("HEFAMINC", "HUFAMINC"), names(cps))
+stopifnot(length(inc_cols) > 0)
+cps[inc_cols] <- lapply(cps[inc_cols], function(x) ifelse(x < 0, NA, x))
+cps$income <- do.call(dplyr::coalesce, unname(as.list(cps[inc_cols])))
 
-# ATUS 2005----
-#Note: Utilized AI to adapt my 2011 stuff
-# Reading in tables
-cps_05 <- read.table("../Dataset/atuscps_2005/atuscps_2005.dat",
-                       header = TRUE, sep = ',')
-respondent_05 <- read.table("../Dataset/atusresp_2005/atusresp_2005.dat",
-                              header = TRUE, sep = ',')
-activity_05 <- read.table("../Dataset/atussum_2005/atussum_2005.dat",
-                            header = TRUE, sep = ',')
-
-# Trimming CPS
-cps_05_trimmed <- cps_05 %>%
+cps_trimmed <- cps %>%
   select(
-    TUCASEID,      # ATUS case/respondent ID
-    TULINENO,      # Household member line number
-    
-    HUFAMINC,      # Family/household income
-    HETENURE,      # Housing tenure: owned, rented, etc.
-    
-    PESEX,         # Sex
-    PRTAGE,        # Age
-    PEEDUCA,       # Educational attainment
-    PEMARITL,      # Marital status
-    PRCITSHP,      # Citizenship status
-    PTDTRACE,      # Race
-    PEHRUSLT,      # Usual hours worked per week
-    
-    GEPSEUST,      # Pseudo collapsed sampling stratum
-    GEPSEUCL,      # Pseudo PSU/cluster
-    GESTFIPS,       # State
-    GTMETSTA
+    TUCASEID, TULINENO, income,
+    HETENURE, PESEX, PRTAGE, PEEDUCA, PEMARITL, PRCITSHP, PTDTRACE, PEHRUSLT,
+    any_of(c("GEPSEUST", "GEPSEUCL")),   # pseudo stratum / cluster, if present
+    GESTFIPS, GTMETSTA
   ) %>%
   rename(
-    sex=PESEX, homeowner=HETENURE, income=HUFAMINC,
-    education=PEEDUCA, married=PEMARITL, citizen=PRCITSHP,
-    race=PTDTRACE, age=PRTAGE, workhours=PEHRUSLT
+    homeowner = HETENURE, sex = PESEX, age = PRTAGE, education = PEEDUCA,
+    married = PEMARITL, citizen = PRCITSHP, race = PTDTRACE,
+    workhours = PEHRUSLT
   )
+rm(cps)
 
+# Respondent file ----
+resp <- read_atus(resp_path, keep = c(
+  "TUCASEID", "TULINENO", "TUYEAR", "TUFNWGTP",
+  "TESCHENR", "TELFS", "TRDPFTPT", "TRSPPRES", "TRCHILDNUM", "TRTALONE"
+))
+# Fallback if TUYEAR is not in the file: first 4 digits of the case ID.
+if (!"TUYEAR" %in% names(resp)) {
+  resp$TUYEAR <- as.integer(substr(resp$TUCASEID, 1, 4))
+}
 
-# Trimming Respondent
-respondent_05_trimmed <- respondent_05 %>%
-  select(
-    TUCASEID,      # ATUS case ID
-    TULINENO,      # Household member line number
-    TUFINLWGT,     # ATUS final survey weight
-    
-    TESCHENR,      # School enrollment status
-    TELFS,         # Labor force status
-    
-    TRDPFTPT,      # Full-time/part-time work status
-    TRSPPRES,      # Spouse/partner present
-    TRCHILDNUM,    # Number of children
-    TRTALONE       # Time spent alone
-  ) %>%
+resp_trimmed <- resp %>%
   rename(
-    inschool = TESCHENR,
-    employed = TELFS,
-    fulltime = TRDPFTPT,
-    spouse_pres = TRSPPRES,
-    children = TRCHILDNUM,
-    timealone = TRTALONE
+    year = TUYEAR,
+    inschool = TESCHENR, employed = TELFS, fulltime = TRDPFTPT,
+    spouse_pres = TRSPPRES, children = TRCHILDNUM, timealone = TRTALONE
   )
+rm(resp)
 
-# Trimming Activity Summary
-activity_05_trimmed <- activity_05 %>%
+# Year window ----
+# The source files cover 2003-2025; keep only the years used in the analysis.
+# Filtering here as respondent file carries it and then restricting
+# the other two tables to these respondents keeps everything consistent.
+year_min <- 2004
+year_max <- 2013
+resp_trimmed <- resp_trimmed %>% filter(year >= year_min, year <= year_max)
+
+# Activity summary file ----
+# Only the activity columns that feed the outcome/control sums are read.
+# Civic: the lexicon changed in 2008. "Waiting assoc. w/ civic obligations"
+# is merged into 100383. 100299 is included for all years
+# (the old 2011 block left it out).
+act <- read_atus(
+  sum_path, keep = "TUCASEID",
+  keep_regex = "^t(1201|1202|1301|14|15|100201|100299|100383)"
+)
+act_trimmed <- act %>%
   mutate(
-    volunteer_mins = rowSums(
-      across(starts_with("t15")),
-      na.rm = TRUE
-    ),
-    social_mins = rowSums(
-      across(c(starts_with("t1202"),starts_with("t1201"))),
-      na.rm = TRUE
-    ),
-    sports_mins = rowSums(
-      across(starts_with("t1301")),
-      na.rm = TRUE
-    ),
-    civic_mins = rowSums(
-      across(c(t100201, t100299, t100303)),
-      na.rm = TRUE
-    ),
+    volunteer_mins = rowSums(across(starts_with("T15")), na.rm = TRUE),
+    social_mins    = rowSums(across(starts_with(c("T1201", "T1202"))), na.rm = TRUE),
+    sports_mins    = rowSums(across(starts_with("T1301")), na.rm = TRUE),
+    civic_mins     = rowSums(across(starts_with("T10")), na.rm = TRUE),
     # This is for controls
-    relig_mins = rowSums(
-      across(starts_with("t14")),
-      na.rm = TRUE
-    )
+    relig_mins     = rowSums(across(starts_with("T14")), na.rm = TRUE)
   ) %>%
-  select(
-    TUCASEID,       # ATUS case ID
-    volunteer_mins,
-    social_mins,
-    sports_mins,
-    civic_mins, # Civic obligations/participation
-    relig_mins
+  select(TUCASEID, volunteer_mins, social_mins, sports_mins, civic_mins,
+         relig_mins)
+rm(act)
+
+# Key checks before joining (a duplicated key would silently multiply rows)
+stopifnot(
+  !anyDuplicated(act_trimmed$TUCASEID),
+  !anyDuplicated(resp_trimmed$TUCASEID),
+  !anyDuplicated(cps_trimmed[c("TUCASEID", "TULINENO")])
+)
+
+# Joining ----
+data_0413 <- act_trimmed %>%
+  left_join(resp_trimmed, by = "TUCASEID") %>%
+  left_join(cps_trimmed, by = c("TUCASEID", "TULINENO")) %>%
+  relocate(TUCASEID, TULINENO, year, TUFNWGTP, homeowner, volunteer_mins) %>%
+  mutate(
+    # TUFNWGTP is scaled to a single year's population. When pooling years,
+    # divide by the number of years pooled for population-level estimates.
+    # (Recompute if you later subset to fewer years.)
+    wt_pooled = TUFNWGTP / n_distinct(year),
+    post2008  = as.integer(year >= 2008)
   )
 
-# Joining
-data_05 <- activity_05_trimmed %>%
-  left_join(respondent_05_trimmed, by = "TUCASEID")%>%
-  left_join(cps_05_trimmed, by = c("TUCASEID", "TULINENO"))%>%
-  relocate(TUCASEID, TULINENO, TUFINLWGT, homeowner, volunteer_mins)%>%
-  mutate(owner = ifelse(homeowner==1,1,0), year=2005)
+stopifnot(nrow(data_0413) == nrow(act_trimmed))
+print(table(data_0413$year, useNA = "ifany"))
 
-data_0511 <- bind_rows(data_05, data_11)
-data_0511 <- data_0511%>%mutate(post2008 = ifelse(year >= 2008, 1, 0))
+# Keep owners/renters only. HETENURE: 1 = owned, 2 = rented,
+# 3 = occupied without payment of rent; negatives are missing codes.
+data_0413 <- data_0413 %>%
+  filter(homeowner %in% 1:2) %>%
+  mutate(owner = as.integer(homeowner == 1))
 
 # Further refining, recoding categoricals ----
-data_0511 <- data_0511%>%filter(homeowner != 3)
-
-data_0511 <- data_0511 %>%
+data_0413 <- data_0413 %>%
   mutate(
-    # EDUCATION OPTION 2: Highest educational attainment.
-    # This retains the substantive credential categories.
+    # EDUCATION: Highest educational attainment.
     education_cat = case_when(
       education %in% 31:38 ~ "Less than high school",
       education == 39 ~ "High school graduate",
@@ -242,7 +167,6 @@ data_0511 <- data_0511 %>%
       education %in% 44:46 ~ "Master's degree or higher",
       TRUE ~ NA_character_
     ),
-    
     education_cat = factor(
       education_cat,
       levels = c(
@@ -256,19 +180,18 @@ data_0511 <- data_0511 %>%
       ordered = FALSE
     ),
     
-    # RACE: Preserve White and Black; combine rare categories.
-    # 1 = White; 2 = Black; 3-5 = other single-race categories;
-    # 6-19 = multiracial combinations in the 2005/2011 coding.
+    # RACE: Preserve White and Black; combine everything else.
+    # 1 = White only; 2 = Black only; 3 and up = other single-race and all
+    # multiracial combinations. The number of multiracial codes grew over
+    # 2003-2019, so this is open-ended.
     race_cat = case_when(
       race == 1 ~ "White",
       race == 2 ~ "Black",
-      #race %in% 3:5 ~ "Other single race",
-      #race %in% 6:19 ~ "Multiracial",
-      race %in% 3:19 ~ "Other / Multiracial",
+      race >= 3 ~ "Other / Multiracial",
       TRUE ~ NA_character_
     ),
     race_cat = factor(race_cat,
-        levels = c("White", "Black", "Other / Multiracial")),
+                      levels = c("White", "Black", "Other / Multiracial")),
     
     # SEX: 1 = male, 2 = female.
     sex_cat = factor(
@@ -286,23 +209,21 @@ data_0511 <- data_0511 %>%
     ),
     married_cat = factor(married_cat),
     
-    # CITIZENSHIP: Preserve the three substantive categories.
-    citizen_cat = factor(
-      if_else(citizen %in% 1:3, citizen, NA_real_),
-      levels = c(1, 2, 3),
-      labels = c(
-        "Native-born citizen",
-        "Naturalized citizen",
-        "Not a citizen"
-      )
+    # CITIZENSHIP (PRCITSHP): 1-3 = native-born (US, PR/outlying area, or
+    # born abroad to US parents), 4 = naturalized, 5 = not a citizen.
+    # There was a bug in draft 2's code.
+    citizen_cat = case_when(
+      citizen %in% 1:3 ~ "Native-born citizen",
+      citizen == 4     ~ "Naturalized citizen",
+      citizen == 5     ~ "Not a citizen",
+      TRUE             ~ NA_character_
     ),
-
+    citizen_cat = factor(
+      citizen_cat,
+      levels = c("Native-born citizen", "Naturalized citizen", "Not a citizen")
+    ),
+    
     # INCOME: Brackets aren't equal size, recoding.
-    # <$15,000 (lower)
-    # <35,000 (lower-middle)
-    # <$65,000 (middle)
-    # <$100,000 (upper-middle)
-    # >=$100,000 (upper)
     income_cat = case_when(
       income %in% 1:5   ~ "Under $15,000",
       income %in% 6:9   ~ "$15,000-$34,999",
@@ -323,13 +244,13 @@ data_0511 <- data_0511 %>%
       ordered = FALSE
     ),
     
-    # HOMEOWNERSHIP: Existing filter excludes code 3.
+    # HOMEOWNERSHIP: filtered to codes 1:2 above.
     homeowner_cat = factor(
       if_else(homeowner %in% 1:2, homeowner, NA_real_),
       levels = c(2, 1),
       labels = c("Renter", "Homeowner")
     ),
-
+    
     # LABOR FORCE STATUS.
     # 1-2 = Employed
     # 3-4 = Unemployed (including temporary layoff)
@@ -365,8 +286,6 @@ data_0511 <- data_0511 %>%
     ),
     
     # FULL-TIME / PART-TIME STATUS.
-    # Confirm the 2005 and 2011 codebooks before using this variable:
-    # TRDPFTPT may contain additional nonemployment codes.
     fulltime_cat = factor(
       if_else(fulltime %in% 1:2, fulltime, NA_real_),
       levels = 1:2,
@@ -393,40 +312,26 @@ data_0511 <- data_0511 %>%
     
     metro_cat = factor(GTMETSTA),
     
-    relig_cat = as.integer(relig_mins >0),
+    # Religious activity indicator (note: religious education, 140105, was
+    # added to the lexicon in 2007; before that it was coded elsewhere).
+    relig_cat = as.integer(relig_mins > 0),
     relig_cat = factor(
       if_else(relig_cat %in% 0:1, relig_cat, NA_real_),
       levels = c(0, 1),
       labels = c("Not Religious", "Religious")
     ),
+    
     # YEAR AND POST-PERIOD INDICATORS.
-    # Both are used in case I add more years for parallel-trends
     year_cat = factor(year),
     post2008_cat = factor(post2008, levels = c(0, 1)),
     owner_cat = factor(owner, levels = c(0, 1))
-    )
+  )
 
 # Filtering out original form of recoded vars
-data_0511_clean <- data_0511 %>%
+# (GESTFIPS is kept so a state-by-year merge is possible)
+data_0413_clean <- data_0413 %>%
   select(
     -inschool, -employed, -fulltime, -spouse_pres, -income, -sex, -education,
-    -married, -citizen, -homeowner, -GESTFIPS)
+    -married, -citizen, -homeowner)
 
-# Getting delinquency ----
-# skip 8 for proper headers.
-# deldat <- read_excel("../Dataset/area_report_by_year.xlsx", 
-#                      sheet = "mortgage_delinq", skip=8, n_max = 52)
-# del_lookup <- deldat %>% mutate(delinquency_rate = 
-#             rowMeans(
-#               across(c('Q4_2006','Q4_2007','Q4_2008','Q4_2009','Q4_2010')),
-#               na.rm = TRUE
-#             )) %>% select(state, delinquency_rate) %>%
-#             mutate(
-#               delinq_centered = delinquency_rate - 
-#                 mean(delinquency_rate, na.rm = TRUE)
-#             )
-# 
-# data_0511_clean <- data_0511_clean %>%
-#   left_join(del_lookup, by="state")
-
-saveRDS(data_0511_clean, "data_0511_clean.rds")
+saveRDS(data_0413_clean, "data_0413_clean.rds")

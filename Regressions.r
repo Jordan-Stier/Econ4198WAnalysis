@@ -12,7 +12,49 @@ library(pandoc)
 library(flextable)
 library(modelsummary)
 
-housing_data <-readRDS("data_0511_clean.rds")
+# Consistent publication-style formatting for every table.
+format_table_style <- function(ft, left_cols = NULL) {
+  ft <- ft |>
+    theme_booktabs() |>
+    bold(part = "header") |>
+    font(fontname = "Times New Roman", part = "all") |>
+    fontsize(size = 10, part = "all") |>
+    align(align = "center", part = "all") |>
+    valign(valign = "center", part = "all") |>
+    autofit() |>
+    set_table_properties(layout = "autofit", width = 1)
+  
+  if (!is.null(left_cols)) {
+    available_cols <- ft$col_keys
+    requested_cols <- intersect(left_cols, available_cols)
+    
+    # Fall back to the first column for modelsummary tables
+    if (length(requested_cols) == 0 &&
+        "term" %in% left_cols &&
+        length(available_cols) > 0) {
+      requested_cols <- available_cols[1]
+    }
+    
+    if (length(requested_cols) > 0) {
+      ft <- align(
+        ft,
+        j = requested_cols,
+        align = "left",
+        part = "all"
+      )
+    }
+  }
+
+  # Footnotes are consistently smaller and italicized.
+  ft <- ft |>
+    font(fontname = "Times New Roman", part = "footer") |>
+    fontsize(size = 9, part = "footer") |>
+    italic(part = "footer")
+
+  ft
+}
+
+housing_data <-readRDS("data_0413_clean.rds")
 
 # Dif ids by year
 housing_data <- housing_data %>%
@@ -23,7 +65,7 @@ housing_data <- housing_data %>%
 # haven't decided if I'll use svyglm yet
 svdes <- svydesign(
   ids = ~clust_yr, strata = ~strat_yr,
-  weights = ~TUFINLWGT, nest = TRUE, data = housing_data
+  weights = ~wt_pooled, nest = TRUE, data = housing_data
 )
 # Done to account for a few PSUs with 1 obs
 options(survey.lonely.psu = "adjust")
@@ -64,7 +106,7 @@ run_models <- function(
         outcome, " > 0, type = 'left') ~ ", r
       )),
       data = data,
-      weights = TUFINLWGT,
+      weights = wt_pooled,
       dist = "gaussian",
       robust = TRUE,
       model = TRUE,
@@ -72,6 +114,7 @@ run_models <- function(
     )
   })
 }
+
 # I accidentally deleted this at some point so claude rewrote
 ## Average marginal effects of homeownership ----
 # Estimation sample and sampling weights from a fitted model
@@ -92,30 +135,42 @@ run_models <- function(
 }
 
 # pred_fun(d) returns an n x k matrix of predicted outcomes for data d.
-# Returns pooled, 2005, 2011 homeowner-renter gaps and their difference.
-.ame_table <- function(pred_fun, mf, w, year_sample = c("own", "all")) {
-  year_sample <- match.arg(year_sample)
-  hh <- levels(mf$homeowner_cat)   # c("Renter", "Homeowner")
-  yy <- levels(mf$year_cat)        # c("2005", "2011")
+# Returns pooled and year-specific homeowner-renter gaps
+.ame_table <- function(pred_fun, mf, w, year_sample = "own") {
+  year_sample <- match.arg(year_sample, c("own", "all"))
+  
+  hh <- levels(mf$homeowner_cat)
+  yy <- levels(mf$year_cat)
   
   gap <- function(d, wt) {
     M <- pred_fun(.set_factor(d, "homeowner_cat", hh[2])) -
       pred_fun(.set_factor(d, "homeowner_cat", hh[1]))
+    
     colSums(M * wt) / sum(wt)
   }
+  
   year_gap <- function(y) {
-    if (year_sample == "own") {      # average over that year's respondents
+    if (year_sample == "own") {
       i <- mf$year_cat == y
       gap(mf[i, , drop = FALSE], w[i])
-    } else {                         # set year for everyone
+    } else {
       gap(.set_factor(mf, "year_cat", y), w)
     }
   }
   
-  out <- rbind(pooled   = gap(mf, w),
-               gap_2005 = year_gap(yy[1]),
-               gap_2011 = year_gap(yy[2]))
-  rbind(out, did = out["gap_2011", ] - out["gap_2005", ])
+  # Pooled estimate
+  pooled <- gap(mf, w)
+  
+  # Individual year estimates
+  annual <- lapply(yy, year_gap)
+  names(annual) <- paste0("year_", yy)
+  
+  out <- do.call(rbind, c(
+    list(pooled = pooled),
+    annual
+  ))
+  
+  out
 }
 
 # Tobit (survreg, left-censored at 0): Ey, Pr(y>0), E[y | y>0]
@@ -159,20 +214,24 @@ effects_ame_probit <- function(m, year_sample = "own", weighted = TRUE) {
 # Avg marginal effects. Currently only for homeowner:year interaction.
 ame_inference <- function(m, ame_fun = effects_ame) {
   
-  # Coerce AME output to a matrix; a plain named vector becomes a "Pr" column
   ame_mat <- function(model) {
     r <- ame_fun(model)
+    
     if (is.null(dim(r))) {
-      r <- matrix(as.numeric(r), ncol = 1,
-                  dimnames = list(names(r), "Pr"))
+      r <- matrix(
+        as.numeric(r),
+        ncol = 1,
+        dimnames = list(names(r), "Pr")
+      )
     }
+    
     as.matrix(r)
   }
   
   V <- vcov(m)
   b <- coef(m)
   
-  # Check whether the covariance matrix includes log(scale)
+  # Check whether covariance matrix includes log(scale)
   extra <- setdiff(colnames(V), names(b))
   
   if (length(extra) == 1 &&
@@ -185,7 +244,6 @@ ame_inference <- function(m, ame_fun = effects_ame) {
     stop("Unexpected variance-covariance matrix structure.")
   }
   
-  # Parameter vector
   pars <- b
   
   if (include_scale) {
@@ -194,7 +252,6 @@ ame_inference <- function(m, ame_fun = effects_ame) {
   
   V <- V[names(pars), names(pars), drop = FALSE]
   
-  # Recalculate AMEs at a given parameter vector
   calculate <- function(p) {
     mm <- m
     mm$coefficients <- p[names(b)]
@@ -206,9 +263,10 @@ ame_inference <- function(m, ame_fun = effects_ame) {
     as.vector(t(ame_mat(mm)))
   }
   
+  original <- ame_mat(m)
   estimates <- calculate(pars)
   
-  # Numerical gradient (central differences)
+  # Numerical gradient
   G <- matrix(
     NA_real_,
     nrow = length(estimates),
@@ -216,7 +274,6 @@ ame_inference <- function(m, ame_fun = effects_ame) {
   )
   
   for (j in seq_along(pars)) {
-    
     step <- 1e-5 * max(1, abs(pars[j]))
     
     p_plus <- pars
@@ -230,12 +287,22 @@ ame_inference <- function(m, ame_fun = effects_ame) {
     ) / (2 * step)
   }
   
-  # Delta-method variance
-  ame_var <- G %*% V %*% t(G)
-  ame_se <- sqrt(pmax(diag(ame_var), 0))
+  # Identify each AME in the covariance matrix
+  ame_names <- unlist(
+    lapply(
+      rownames(original),
+      function(r) paste(r, colnames(original), sep = "::")
+    )
+  )
   
-  # Organize results
-  original <- ame_mat(m)
+  rownames(G) <- ame_names
+  colnames(G) <- names(pars)
+  
+  # Full covariance matrix of AMEs
+  ame_var <- G %*% V %*% t(G)
+  dimnames(ame_var) <- list(ame_names, ame_names)
+  
+  ame_se <- sqrt(pmax(diag(ame_var), 0))
   
   est <- matrix(
     estimates,
@@ -256,7 +323,8 @@ ame_inference <- function(m, ame_fun = effects_ame) {
   list(
     estimate = est,
     se = se,
-    p = p
+    p = p,
+    vcov = ame_var
   )
 }
 
@@ -270,9 +338,7 @@ format_ame_table <- function(
 ) {
   
   stars <- function(p) {
-    ifelse(p < 0.01, "***",
-           ifelse(p < 0.05, "**",
-                  ifelse(p < 0.10, "*", "")))
+    ifelse(p < 0.05, "*", "")
   }
   
   labels <- c(
@@ -309,12 +375,11 @@ format_ame_table <- function(
     out
   }))
   
-  results$Comparison <- c(
-    pooled   = "Pooled",
-    gap_2005 = "2005",
-    gap_2011 = "2011",
-    did      = "Change (2011 - 2005)"
-  )[tolower(results$Comparison)]
+  results$Comparison <- ifelse(
+    tolower(results$Comparison) == "pooled",
+    "Pooled",
+    sub("^year_", "", tolower(results$Comparison))
+  )
   
   ft <- flextable(results) |>
     set_header_labels(
@@ -343,23 +408,14 @@ format_ame_table <- function(
   )
   
   ft <- ft |>
-    theme_booktabs() |>
-    bold(part = "header") |>
-    align(align = "center", part = "all") |>
-    align(j = c("Model", "Comparison"),
-          align = "left", part = "all") |>
     merge_v(j = "Model") |>
-    valign(valign = "center", part = "all") |>
-    autofit() |>
-    set_table_properties(layout = "autofit", width = 1) |>
-    fontsize(size = 9, part = "all") |>
     add_footer_lines(
       values = paste0(
-        "Standard errors in parentheses. * p < 0.10; ",
-        "** p < 0.05; *** p < 0.01. ",
+        "Standard errors in parentheses. * p < 0.05. ",
         paste(definitions[measures], collapse = "; "), "."
       )
-    )
+    ) |>
+    format_table_style(left_cols = c("Model", "Comparison"))
   
   if (!is.null(filename)) {
     save_as_docx(ft, path = filename)
@@ -448,13 +504,22 @@ ft_ame_social <- format_ame_table(
 
 # tables ----
 # May need to change these since they're tobit now.
-# Coef map
+# Coefficient map
+years <- levels(housing_data$year_cat)
+reference_year <- years[1]
+
 coef_names <- c(
   "(Intercept)" = "Constant",
-  "homeowner_catHomeowner" = "Homeowner",
-  "year_cat2011" = "Year: 2011",
-  "homeowner_catHomeowner:year_cat2011" = "Homeowner × 2011"
+  "homeowner_catHomeowner" = paste("Homeowner:", years[1])
 )
+
+# Include homeowner-year interactions, but omit year fixed effects
+for (y in years[-1]) {
+  coef_names[
+    paste0("homeowner_catHomeowner:year_cat", y)
+  ] <- paste("Homeowner ×", y)
+}
+
 # defining control rows
 control_rows <- data.frame(
   term = c("Demographic Controls", "Socioeconomic Controls",
@@ -485,23 +550,295 @@ format_reg_table <- function(models, filename,
     models,
     coef_map = coef_mapping,
     model_names = model_names,
-    stars = TRUE,
+    stars = c("*" = 0.05),
     add_rows = rows_controls,
     gof_omit = "AIC|BIC|Log.Lik",
     output = "flextable"
   )
   
   ft <- ft |>
-    theme_booktabs() |>
-    autofit() |>
-    set_table_properties(layout = "autofit", width = 1)|>
-    fontsize(size = 9, part = "all") |>
-    align(align = "center", part = "all")
+    add_footer_lines(
+      values = paste0(
+        "Reference year: ", reference_year, ". ",
+        "Homeowner × year coefficients represent changes ",
+        "in the homeowner-renter difference relative to ",
+        "the reference year. ",
+        "Standard errors in parentheses. * p < 0.05."
+      )
+    ) |>
+    format_table_style(left_cols = "term")
   
   save_as_docx(ft, path = filename)
   
   return(ft)
 }
+
+# Compact main-results table ----
+format_select_table <- function(
+    models,
+    filename = NULL,
+    coef_mapping = coef_names,
+    selected_years = c("2005", "2008", "2011")
+) {
+  
+  models <- models[c("Baseline", "Full Model")]
+  
+  # Reference-year coefficient plus selected year interactions
+  selected_terms <- c(
+    "homeowner_catHomeowner",
+    paste0("homeowner_catHomeowner:year_cat", selected_years)
+  )
+  
+  missing_terms <- setdiff(selected_terms, names(coef_mapping))
+  if (length(missing_terms) > 0) {
+    stop("Missing coefficient mappings: ",
+         paste(missing_terms, collapse = ", "))
+  }
+  
+  selected_mapping <- coef_mapping[selected_terms]
+  
+  # Control rows
+  rows_controls <- data.frame(
+    term = c(
+      "Year Interactions",
+      "Demographic Controls",
+      "Socioeconomic Controls",
+      "Household Controls"
+    ),
+    `Baseline` = c("Yes", "", "", ""),
+    `Full Model` = c("Yes", "Yes", "Yes", "Yes"),
+    check.names = FALSE
+  )
+  
+  attr(rows_controls, "position") <- "coef_end"
+  
+  ft <- modelsummary(
+    models,
+    coef_map = selected_mapping,
+    model_names = c("Baseline", "Full Model"),
+    stars = c("*" = 0.05),
+    add_rows = rows_controls,
+    gof_omit = "AIC|BIC|Log.Lik",
+    output = "flextable"
+  )
+  
+  ft <- ft |>
+    add_footer_lines(
+      values = paste0(
+        "Reference year: ", reference_year, ". ",
+        "Homeowner × year coefficients represent changes ",
+        "in the homeowner-renter difference relative to ",
+        "the reference year. ",
+        "All specifications include year fixed effects and ",
+        "homeowner-year interactions. ",
+        "Robust standard errors clustered by PSU within year ",
+        "in parentheses. * p < 0.05."
+      )
+    ) |>
+    format_table_style(left_cols = "term")
+  
+  if (!is.null(filename)) {
+    save_as_docx(ft, path = filename)
+  }
+  
+  invisible(ft)
+}
+
+format_select_ame_table <- function(
+    models,
+    filename = NULL,
+    selected_years = c("2005", "2008", "2011"),
+    measure = "Ey"
+) {
+  
+  models <- models[c("Baseline", "Full Model")]
+  
+  # Calculate estimates and covariance matrices
+  inference <- lapply(models, ame_inference)
+  
+  # Format estimates with significance stars
+  format_est <- function(est, se, p) {
+    stars <- ifelse(p < 0.05, "*", "")
+    
+    sprintf("%.2f%s\n(%.2f)", est, stars, se)
+  }
+  
+  # Define annual estimates and year-to-year contrasts
+  comparisons <- list(
+    setNames(
+      lapply(selected_years, function(y) {
+        list(type = "year", year = y)
+      }),
+      paste0("Year ", selected_years)
+    ),
+    list(
+      "Change: 2005–2008" = list(
+        type = "difference", from = "2005", to = "2008"
+      ),
+      "Change: 2008–2011" = list(
+        type = "difference", from = "2008", to = "2011"
+      ),
+      "Change: 2005–2011" = list(
+        type = "difference", from = "2005", to = "2011"
+      )
+    )
+  )
+  
+  comparisons <- unlist(comparisons, recursive = FALSE)
+  
+  # Calculate one comparison for one model
+  get_comparison <- function(x, comparison) {
+    
+    if (comparison$type == "year") {
+      
+      key <- paste0("year_", comparison$year)
+      
+      est <- x$estimate[key, measure]
+      se <- x$se[key, measure]
+      p <- x$p[key, measure]
+      
+    } else {
+      
+      key_from <- paste0("year_", comparison$from, "::", measure)
+      key_to   <- paste0("year_", comparison$to, "::", measure)
+      
+      L <- setNames(rep(0, nrow(x$vcov)), rownames(x$vcov))
+      L[key_from] <- -1
+      L[key_to] <- 1
+      
+      est <- x$estimate[
+        paste0("year_", comparison$to), measure
+      ] - x$estimate[
+        paste0("year_", comparison$from), measure
+      ]
+      
+      variance <- drop(t(L) %*% x$vcov %*% L)
+      se <- sqrt(max(variance, 0))
+      p <- 2 * pnorm(-abs(est / se))
+    }
+    
+    format_est(est, se, p)
+  }
+  
+  # Build table
+  results <- data.frame(
+    Comparison = names(comparisons),
+    Baseline = vapply(
+      comparisons,
+      function(z) get_comparison(inference[["Baseline"]], z),
+      character(1)
+    ),
+    `Full Model` = vapply(
+      comparisons,
+      function(z) get_comparison(inference[["Full Model"]], z),
+      character(1)
+    ),
+    check.names = FALSE
+  )
+  
+  ft <- flextable(results) |>
+    set_header_labels(
+      Comparison = "Comparison",
+      Baseline = "Baseline",
+      `Full Model` = "Full Model"
+    ) |>
+    add_footer_lines(
+      values = paste0(
+        "Entries are average marginal effects on unconditional ",
+        "expected minutes. Annual estimates are homeowner-renter ",
+        "differences within each year. Year-to-year changes are ",
+        "differences between those annual AMEs. ",
+        "Delta-method standard errors in parentheses. * p < 0.05."
+      )
+    ) |>
+    format_table_style(left_cols = "Comparison")
+  
+  if (!is.null(filename)) {
+    save_as_docx(ft, path = filename)
+  }
+  
+  invisible(ft)
+}
+
+# Plotting AME trendline
+plot_ame_trend <- function(
+    m,
+    filename = NULL,
+    measure = "Ey"
+) {
+  
+  x <- ame_inference(m)
+  
+  # Extract annual estimates only (exclude pooled estimate)
+  annual_rows <- grep(
+    "^year_",
+    rownames(x$estimate),
+    value = TRUE
+  )
+  
+  years <- sub("^year_", "", annual_rows)
+  keys <- paste0(annual_rows, "::", measure)
+  
+  estimates <- x$estimate[annual_rows, measure]
+  variances <- diag(x$vcov)[keys]
+  ses <- sqrt(pmax(variances, 0))
+  
+  plot_data <- data.frame(
+    year = as.numeric(years),
+    estimate = as.numeric(estimates),
+    se = as.numeric(ses)
+  ) %>%
+    mutate(
+      lower = estimate - 1.96 * se,
+      upper = estimate + 1.96 * se
+    )
+  
+  p <- ggplot(
+    plot_data,
+    aes(x = year, y = estimate)
+  ) +
+    geom_ribbon(
+      aes(ymin = lower, ymax = upper),
+      alpha = 0.20
+    ) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 2) +
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      color = "gray40"
+    ) +
+    scale_x_continuous(
+      breaks = plot_data$year
+    ) +
+    labs(
+      title = "Homeownership and Expected Volunteering Minutes",
+      subtitle = "Full Tobit model; annual average marginal effects",
+      x = "Year",
+      y = "Homeowner-renter difference in expected minutes",
+      caption = "Shaded region represents 95% confidence intervals."
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1
+      )
+    )
+  
+  if (!is.null(filename)) {
+    ggsave(
+      filename,
+      plot = p,
+      width = 10,
+      height = 6,
+      dpi = 300
+    )
+  }
+  
+  return(p)
+}
+
 # Files for model tables ----
 model_tables <- list(
   "reg1-vol_table.docx" = mdl_volunteer,
@@ -517,6 +854,24 @@ ft_list <- lapply(names(model_tables), function(filename) {
     rows_controls = control_rows
   )
 })
+
+# Selected Tobit table
+ft_vol_select <- format_select_table(
+  models = mdl_volunteer,
+  filename = "reg1-vol_select.docx"
+)
+
+# Selected AME table, including year-to-year differences
+ft_ame_vol_select <- format_select_ame_table(
+  models = mdl_volunteer,
+  filename = "ame1-volunteer-select.docx"
+)
+
+# Full annual AME graph (Full Model)
+p_ame_vol <- plot_ame_trend(
+  m = mdl_volunteer[["Full Model"]],
+  filename = "ame1-volunteer-trend.png"
+)
 
 names(ft_list) <- names(model_tables)
 
@@ -548,7 +903,7 @@ format_alt_table <- function(particip, intens, filename = NULL,
   ft <- modelsummary(
     models,
     coef_map = coef_mapping,
-    stars = TRUE,
+    stars = c("*" = 0.05),
     add_rows = rows_controls,
     gof_omit = "AIC|BIC|Log.Lik",
     output = "flextable"
@@ -557,14 +912,11 @@ format_alt_table <- function(particip, intens, filename = NULL,
       paste(
         "Design-based robust standard errors in parentheses.",
         "Participation (columns 1-2): probit for Pr(minutes > 0).",
-        "Intensity (columns 3-4): linear model of minutes among participants."
+        "Intensity (columns 3-4): linear model of minutes among participants.",
+        "* p < 0.05."
       )
     ) |>
-    theme_booktabs() |>
-    autofit() |>
-    set_table_properties(layout = "autofit", width = 1) |>
-    fontsize(size = 9, part = "all") |>
-    align(align = "center", part = "all")
+    format_table_style(left_cols = "term")
   
   if (!is.null(filename)) save_as_docx(ft, path = filename)
   
