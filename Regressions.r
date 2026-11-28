@@ -644,11 +644,11 @@ format_select_table <- function(
   invisible(ft)
 }
 
+
 format_select_ame_table <- function(
     models,
     filename = NULL,
-    selected_years = c("2005", "2008", "2011"),
-    measure = "Ey"
+    selected_years = c("2005", "2008", "2011")
 ) {
   
   models <- models[c("Baseline", "Full Model")]
@@ -656,40 +656,39 @@ format_select_ame_table <- function(
   # Calculate estimates and covariance matrices
   inference <- lapply(models, ame_inference)
   
+  measures <- c("Ey", "Pr", "Eypos")
+  
+  measure_labels <- c(
+    Ey = "Unconditional minutes",
+    Pr = "Participation (pp)",
+    Eypos = "Minutes if participating"
+  )
+  
   # Format estimates with significance stars
-  format_est <- function(est, se, p) {
+  format_est <- function(est, se, p, measure) {
+    
+    if (measure == "Pr") {
+      est <- est * 100
+      se <- se * 100
+    }
+    
     stars <- ifelse(p < 0.05, "*", "")
     
     sprintf("%.2f%s\n(%.2f)", est, stars, se)
   }
   
-  # Define annual estimates and year-to-year contrasts
-  comparisons <- list(
-    setNames(
-      lapply(selected_years, function(y) {
-        list(type = "year", year = y)
-      }),
-      paste0("Year ", selected_years)
-    ),
-    list(
-      "Change: 2005–2008" = list(
-        type = "difference", from = "2005", to = "2008"
-      ),
-      "Change: 2008–2011" = list(
-        type = "difference", from = "2008", to = "2011"
-      ),
-      "Change: 2005–2011" = list(
-        type = "difference", from = "2005", to = "2011"
-      )
-    )
-  )
-  
-  comparisons <- unlist(comparisons, recursive = FALSE)
-  
-  # Calculate one comparison for one model
-  get_comparison <- function(x, comparison) {
+  # Calculate one comparison for one model and measure
+  get_comparison <- function(x, comparison, measure) {
     
-    if (comparison$type == "year") {
+    if (comparison$type == "pooled") {
+      
+      key <- "pooled"
+      
+      est <- x$estimate[key, measure]
+      se <- x$se[key, measure]
+      p <- x$p[key, measure]
+      
+    } else if (comparison$type == "year") {
       
       key <- paste0("year_", comparison$year)
       
@@ -717,41 +716,86 @@ format_select_ame_table <- function(
       p <- 2 * pnorm(-abs(est / se))
     }
     
-    format_est(est, se, p)
+    format_est(est, se, p, measure)
   }
   
-  # Build table
-  results <- data.frame(
-    Comparison = names(comparisons),
-    Baseline = vapply(
-      comparisons,
-      function(z) get_comparison(inference[["Baseline"]], z),
-      character(1)
-    ),
-    `Full Model` = vapply(
-      comparisons,
-      function(z) get_comparison(inference[["Full Model"]], z),
-      character(1)
-    ),
-    check.names = FALSE
+  # Pooled sample and annual comparisons
+  comparisons <- list(
+    "Pooled sample" = list(type = "pooled")
   )
+  
+  comparisons <- c(
+    comparisons,
+    setNames(
+      lapply(selected_years, function(y) {
+        list(type = "year", year = y)
+      }),
+      paste0("Year ", selected_years)
+    )
+  )
+  
+  # Add only the overall change in unconditional minutes
+  comparisons[["Change: 2005–2011"]] <- list(
+    type = "difference",
+    from = "2005",
+    to = "2011"
+  )
+  
+  # Build table
+  results <- do.call(
+    rbind,
+    lapply(names(comparisons), function(comparison_name) {
+      
+      comparison <- comparisons[[comparison_name]]
+      
+      current_measures <- if (comparison$type == "difference") {
+        "Ey"
+      } else {
+        measures
+      }
+      
+      do.call(
+        rbind,
+        lapply(current_measures, function(measure) {
+          
+          data.frame(
+            Period = comparison_name,
+            Outcome = measure_labels[[measure]],
+            Baseline = get_comparison(
+              inference[["Baseline"]], comparison, measure
+            ),
+            `Full Model` = get_comparison(
+              inference[["Full Model"]], comparison, measure
+            ),
+            check.names = FALSE
+          )
+        })
+      )
+    })
+  )
+  
+  rownames(results) <- NULL
   
   ft <- flextable(results) |>
     set_header_labels(
-      Comparison = "Comparison",
+      Period = "Period",
+      Outcome = "Outcome",
       Baseline = "Baseline",
       `Full Model` = "Full Model"
     ) |>
     add_footer_lines(
-      values = paste0(
-        "Entries are average marginal effects on unconditional ",
-        "expected minutes. Annual estimates are homeowner-renter ",
-        "differences within each year. Year-to-year changes are ",
-        "differences between those annual AMEs. ",
-        "Delta-method standard errors in parentheses. * p < 0.05."
+      values = c(
+        "* p < 0.05.",
+        paste0(
+          "Average marginal effects on the homeowner-renter difference. ",
+          "Participation estimates expressed in percentage points. ",
+          "Standard errors in parentheses (delta method)."
+        )
       )
     ) |>
-    format_table_style(left_cols = "Comparison")
+    format_table_style(
+      left_cols = c("Period", "Outcome")
+    )
   
   if (!is.null(filename)) {
     save_as_docx(ft, path = filename)
@@ -759,6 +803,8 @@ format_select_ame_table <- function(
   
   invisible(ft)
 }
+
+# Plotting AME trendline
 
 # Plotting AME trendline
 plot_ame_trend <- function(
@@ -812,14 +858,16 @@ plot_ame_trend <- function(
       breaks = plot_data$year
     ) +
     labs(
-      title = "Homeownership and Expected Volunteering Minutes",
-      subtitle = "Full Tobit model; annual average marginal effects",
       x = "Year",
       y = "Homeowner-renter difference in expected minutes",
       caption = "Shaded region represents 95% confidence intervals."
     ) +
-    theme_minimal() +
+    theme_minimal(
+      base_size = 12,
+      base_family = "Times New Roman"
+    ) +
     theme(
+      text = element_text(family = "Times New Roman"),
       axis.text.x = element_text(
         angle = 45,
         hjust = 1
@@ -838,6 +886,7 @@ plot_ame_trend <- function(
   
   return(p)
 }
+
 
 # Files for model tables ----
 model_tables <- list(

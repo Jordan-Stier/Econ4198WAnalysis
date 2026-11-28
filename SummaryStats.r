@@ -195,41 +195,85 @@ save_as_docx(
 )
 
 # Plotting ----
-p <- ggplot(
-  housing_data %>%
-    mutate(
-      Homeownership = homeowner_cat,
-      Year = year_cat
+plot_data <- housing_data %>%
+  mutate(
+    Homeownership = homeowner_cat,
+    Year = year_cat,
+    Participated = as.numeric(volunteer_mins > 0)
+  ) %>%
+  group_by(Year, Homeownership) %>%
+  summarise(
+    Participation = weighted.mean(Participated, wt_pooled, na.rm = TRUE) * 100,
+    Conditional_Minutes = weighted.mean(
+      volunteer_mins[volunteer_mins > 0],
+      wt_pooled[volunteer_mins > 0],
+      na.rm = TRUE
     ),
-  aes(x = Year, y = volunteer_mins, fill = Homeownership, weight = wt_pooled)
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(Participation, Conditional_Minutes),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Measure = factor(
+      Measure,
+      levels = c("Participation", "Conditional_Minutes"),
+      labels = c(
+        "Participation Rate",
+        "Mean Minutes Among Participants"
+      )
+    )
+  )
+
+p <- ggplot(
+  plot_data,
+  aes(
+    x = Year,
+    y = Value,
+    fill = Homeownership
+  )
 ) +
-  stat_summary(
-    fun = mean,
-    geom = "bar",
+  geom_col(
     position = position_dodge(width = 0.9),
     color = "black",
-    linewidth = 0.3
+    linewidth = 0.3,
+    width = 0.8
+  ) +
+  facet_wrap(
+    ~ Measure,
+    scales = "free_y",
+    nrow = 1
   ) +
   scale_fill_grey(
     start = 0.85,
     end = 0.35
   ) +
   labs(
-    title = "Homeownership and Volunteering by Survey Year",
     x = "Survey Year",
-    y = "Weighted Mean Volunteer Minutes",
+    y = NULL,
     fill = "Homeownership Status"
   ) +
-  theme_classic(base_size = 12) +
+  theme_classic(
+    base_size = 12,
+    base_family = "Times New Roman"
+  ) +
   theme(
-    plot.title = element_text(face = "bold"),
-    legend.position = "bottom"
+    text = element_text(family = "Times New Roman"),
+    legend.position = "bottom",
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    panel.spacing = unit(2, "lines")
+  ) +
+  scale_y_continuous(
+    labels = function(x) x
   )
 
 ggsave(
   "homeownership_volunteering.png",
   plot = p,
-  width = 8,
+  width = 10,
   height = 5,
   dpi = 300
 )
